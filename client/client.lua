@@ -151,6 +151,7 @@ RegisterCommand('radio_switch_channel', function()
 end, false)
 
 RegisterKeyMapping('radio_switch_channel', 'Switch channel (chat radio)', 'keyboard', 'TAB')
+RegisterKeyMapping('radio_switch_channel', 'Switch channel (chat radio)', 'keyboard', 'TAB')
 
 
 function GetControlKey(key)
