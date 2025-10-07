@@ -1,0 +1,547 @@
+:root {
+  /* Colors */
+  --bg-1: #0b0b0b;
+  --bg-2: #1b1b1b;
+  --accent-green: #00ff66;
+  --accent-dark-green: #006600;
+  --accent-red: #ff4444;
+  --muted: #777b7a;
+  --panel-border: rgba(255, 255, 255, 0.04);
+
+  /* Sizes */
+  --radio-width: clamp(300px, 32vw, 420px);
+  --chat-width: clamp(300px, 40vw, 520px);
+  --chat-height: clamp(380px, 60vh, 700px);
+
+  --radius: 14px;
+  --gap: 12px;
+  --ui-font: "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+  --mono-font: "Courier New", monospace;
+}
+
+/* Reset + base */
+* {
+  box-sizing: border-box;
+  margin: 0;
+  padding: 0;
+}
+html,
+body {
+  height: 100%;
+}
+body {
+  font-family: var(--ui-font);
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+  overflow: hidden;
+  background: transparent;
+}
+
+/* Utility */
+.hidden {
+  display: none !important;
+  pointer-events: none !important;
+}
+button {
+  font-family: inherit;
+}
+
+/* ===========================
+   RADIO (Talkie-walkie) UI
+   =========================== */
+#radio-interface {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 1000;
+  padding: 18px;
+  pointer-events: auto;
+}
+
+.radio-device {
+  width: var(--radio-width);
+  background: linear-gradient(145deg, var(--bg-2), #0f0f0f);
+  border-radius: calc(var(--radius) + 6px);
+  padding: 18px;
+  box-shadow: 0 18px 50px rgba(0, 0, 0, 0.7),
+    inset 0 1px 0 rgba(255, 255, 255, 0.02);
+  border: 2px solid var(--panel-border);
+  transform-origin: center;
+  animation: radioEnter 320ms cubic-bezier(0.18, 0.9, 0.2, 1);
+}
+
+/* animation disabled when user prefers reduced motion */
+@media (prefers-reduced-motion: reduce) {
+  .radio-device {
+    animation: none;
+  }
+}
+
+@keyframes radioEnter {
+  from {
+    opacity: 0;
+    transform: translateY(-12px) scale(0.98);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+  }
+}
+
+/* screen / lcd */
+.radio-screen {
+  background: linear-gradient(180deg, #09220a, #021006);
+  border-radius: 10px;
+  padding: 12px;
+  box-shadow: inset 0 4px 18px rgba(0, 0, 0, 0.7),
+    0 8px 30px rgba(0, 255, 120, 0.03);
+  border: 1px solid rgba(0, 255, 0, 0.06);
+  overflow: hidden;
+}
+
+.screen-content {
+  position: relative;
+  z-index: 1;
+  color: var(--accent-green);
+  font-family: var(--mono-font);
+  text-shadow: 0 0 8px rgba(0, 255, 128, 0.08);
+}
+.screen-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 8px;
+  font-size: 0.85rem;
+  color: var(--muted);
+}
+
+.power-indicator {
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  background: var(--accent-green);
+  box-shadow: 0 0 8px rgba(0, 255, 120, 0.6);
+}
+
+/* signal bars - slightly larger on wide screens */
+.signal-bars {
+  display: flex;
+  gap: 4px;
+  align-items: end;
+}
+.signal-bars .bar {
+  width: 5px;
+  background: linear-gradient(
+    180deg,
+    var(--accent-green),
+    var(--accent-dark-green)
+  );
+  border-radius: 2px;
+  box-shadow: 0 0 6px rgba(0, 255, 120, 0.08);
+}
+.signal-bars .bar:nth-child(1) {
+  height: 8px;
+}
+.signal-bars .bar:nth-child(2) {
+  height: 12px;
+}
+.signal-bars .bar:nth-child(3) {
+  height: 16px;
+}
+.signal-bars .bar:nth-child(4) {
+  height: 20px;
+}
+
+/* Frequency display */
+.frequency-display {
+  margin: 14px 0;
+}
+.freq-channel {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 10px;
+  background: linear-gradient(
+    180deg,
+    rgba(255, 255, 255, 0.02),
+    rgba(0, 0, 0, 0.2)
+  );
+  border-radius: 8px;
+  border: 1px solid rgba(255, 255, 255, 0.02);
+}
+.freq-channel.secondary {
+  opacity: 0.85;
+}
+
+.channel-label {
+  font-size: 0.77rem;
+  color: var(--muted);
+  font-weight: 700;
+  letter-spacing: 0.04em;
+}
+.freq-number {
+  font-family: var(--mono-font);
+  font-size: clamp(18px, 2.8vw, 28px);
+  font-weight: 800;
+  letter-spacing: 1px;
+  color: var(--accent-green);
+}
+.freq-mhz {
+  font-size: 0.75rem;
+  color: var(--muted);
+}
+
+/* Speaker grill */
+.speaker-grill {
+  background: linear-gradient(180deg, rgba(0, 0, 0, 0.6), rgba(0, 0, 0, 0.2));
+  padding: 10px;
+  border-radius: 10px;
+  margin: 14px 0;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.grill-line {
+  height: 3px;
+  background: linear-gradient(
+    90deg,
+    transparent,
+    rgba(255, 255, 255, 0.03),
+    transparent
+  );
+  border-radius: 2px;
+}
+
+/* Inputs & controls */
+.input-group {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.input-group label {
+  font-size: 12px;
+  color: var(--muted);
+  font-weight: 700;
+  letter-spacing: 0.04em;
+}
+.input-group input {
+  appearance: none;
+  background: #050505;
+  border: 1px solid rgba(255, 255, 255, 0.03);
+  padding: 10px;
+  border-radius: 9px;
+  color: var(--accent-green);
+  font-family: var(--mono-font);
+  font-size: 1.05rem;
+  text-align: center;
+  box-shadow: inset 0 2px 6px rgba(0, 0, 0, 0.6);
+}
+.input-group input:focus {
+  outline: 2px solid rgba(0, 255, 120, 0.12);
+  box-shadow: 0 0 12px rgba(0, 255, 120, 0.06);
+}
+
+.btn-set {
+  background: linear-gradient(145deg, #222, #111);
+  border: 1px solid rgba(255, 255, 255, 0.03);
+  color: var(--accent-green);
+  padding: 10px 12px;
+  border-radius: 9px;
+  font-weight: 800;
+  cursor: pointer;
+  transition: all 0.15s;
+}
+.btn-set:hover {
+  transform: translateY(-2px);
+  box-shadow: 0 8px 26px rgba(0, 255, 120, 0.06);
+}
+
+/* big control row */
+.control-buttons {
+  display: flex;
+  gap: 10px;
+  margin-top: 10px;
+}
+
+.btn-power {
+  width: 100%;
+  justify-content: center;
+  background: linear-gradient(145deg, #2b2b2b, #111);
+  border-radius: 10px;
+  padding: 8px;
+  border: 1px solid rgba(255, 255, 255, 0.03);
+  cursor: pointer;
+  color: var(--accent-red);
+  font-weight: 700;
+}
+
+/* hint */
+.radio-hint {
+  font-size: 12px;
+  color: var(--muted);
+  text-align: center;
+  padding: 8px;
+  border-radius: 8px;
+  background: rgba(255, 255, 255, 0.02);
+}
+
+/* ===========================
+   CHAT UI
+   =========================== */
+#chat-interface {
+  position: absolute;
+  bottom: clamp(40px, 6vh, 110px);
+  right: clamp(12px, 3vw, 36px);
+  z-index: 1000;
+  pointer-events: auto;
+  padding: 8px;
+}
+
+.chat-radio-device {
+  width: var(--chat-width);
+  height: var(--chat-height);
+  background: linear-gradient(145deg, #161616, #0b0b0b);
+  border-radius: 16px;
+  border: 2px solid rgba(255, 255, 255, 0.03);
+  box-shadow: 0 18px 50px rgba(0, 0, 0, 0.75);
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+/* header */
+.chat-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 12px 14px;
+  background: linear-gradient(145deg, #222, #0a0a0a);
+  border-bottom: 1px solid rgba(0, 255, 120, 0.06);
+}
+.header-display {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex: 1;
+}
+.active-freq {
+  display: flex;
+  flex-direction: column;
+  color: var(--accent-green);
+  font-weight: 800;
+  text-shadow: 0 0 8px rgba(0, 255, 120, 0.06);
+}
+.active-freq .main {
+  font-size: clamp(16px, 2.4vw, 22px);
+}
+.active-freq .sub {
+  font-size: 12px;
+  color: var(--muted);
+}
+.header-controls {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+}
+
+.btn-switch {
+  background: transparent;
+  border: 1px solid rgba(0, 255, 120, 0.12);
+  color: var(--accent-green);
+  padding: 8px 12px;
+  border-radius: 8px;
+  cursor: pointer;
+  font-weight: 700;
+}
+.btn-switch:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+.btn-close {
+  background: var(--accent-red);
+  color: #fff;
+  border: none;
+  width: 36px;
+  height: 36px;
+  border-radius: 50%;
+  cursor: pointer;
+}
+
+/* visualizer */
+.audio-visualizer {
+  height: 44px;
+  display: flex;
+  align-items: flex-end;
+  gap: 6px;
+  padding: 8px;
+  background: linear-gradient(180deg, rgba(0, 0, 0, 0.4), transparent);
+}
+.wave-bar {
+  width: 8px;
+  border-radius: 4px;
+  background: linear-gradient(
+    180deg,
+    var(--accent-green),
+    var(--accent-dark-green)
+  );
+  transition: height 0.12s linear;
+}
+
+/* messages */
+.messages-container {
+  flex: 1;
+  overflow-y: auto;
+  padding: 14px;
+  background: linear-gradient(180deg, rgba(0, 0, 0, 0.5), transparent 120px);
+}
+.messages-container::-webkit-scrollbar {
+  width: 8px;
+}
+.messages-container::-webkit-scrollbar-thumb {
+  background: linear-gradient(
+    180deg,
+    var(--accent-green),
+    var(--accent-dark-green)
+  );
+  border-radius: 8px;
+}
+
+/* message item */
+.chat-message {
+  margin-bottom: 14px;
+  display: block;
+}
+.message-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 6px;
+}
+.message-sender {
+  color: var(--accent-green);
+  font-weight: 800;
+}
+.message-time {
+  color: var(--muted);
+  font-size: 12px;
+}
+.message-content {
+  background: linear-gradient(145deg, #0f0f0f, #070707);
+  padding: 10px 12px;
+  border-radius: 10px;
+  border-left: 3px solid rgba(0, 255, 120, 0.12);
+  color: #ddd;
+  line-height: 1.35;
+}
+.chat-message.own-message .message-content {
+  background: linear-gradient(145deg, #012b24, #00211b);
+  border-left-color: rgba(78, 204, 163, 0.28);
+}
+.chat-message.own-message .message-sender {
+  color: #6fe3c0;
+}
+
+/* input zone */
+.input-zone {
+  padding: 12px;
+  border-top: 1px solid rgba(0, 255, 120, 0.04);
+  background: linear-gradient(145deg, #111, #0b0b0b);
+}
+.input-wrapper {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+}
+#chat-input {
+  flex: 1;
+  padding: 10px 12px;
+  border-radius: 10px;
+  border: 1px solid rgba(255, 255, 255, 0.03);
+  background: #070707;
+  color: var(--accent-green);
+  font-size: 14px;
+}
+#chat-input::placeholder {
+  color: rgba(150, 150, 150, 0.5);
+}
+.btn-send {
+  width: 46px;
+  height: 46px;
+  border-radius: 50%;
+  border: none;
+  background: linear-gradient(145deg, var(--accent-green), #00cc66);
+  color: #001;
+  cursor: pointer;
+  font-weight: 900;
+}
+
+/* bottom info */
+.input-info {
+  display: flex;
+  justify-content: space-between;
+  color: var(--muted);
+  font-size: 12px;
+  padding-top: 6px;
+}
+
+/* ===========================
+   Responsive rules
+   =========================== */
+@media (max-width: 900px) {
+  .radio-device {
+    width: min(340px, 86vw);
+  }
+  .chat-radio-device {
+    width: min(420px, 92vw);
+    right: 16px;
+  }
+}
+
+@media (max-width: 520px) {
+  #radio-interface {
+    align-items: flex-start;
+    padding-top: 20px;
+  }
+  .radio-device {
+    width: calc(100vw - 32px);
+  }
+  #chat-interface {
+    left: 0;
+    right: 0;
+    bottom: 16px;
+    display: flex;
+    justify-content: center;
+  }
+  .chat-radio-device {
+    width: calc(100vw - 24px);
+    height: 74vh;
+    max-height: 86vh;
+  }
+  .messages-container {
+    padding: 12px;
+  }
+  .active-freq {
+    align-items: flex-start;
+  }
+  .btn-close {
+    width: 40px;
+    height: 40px;
+  }
+}
+
+/* ===========================
+   Accessibility helpers
+   =========================== */
+:focus {
+  outline: none;
+}
+button:focus-visible,
+input:focus-visible {
+  outline: 2px solid rgba(0, 255, 120, 0.18);
+  outline-offset: 2px;
+}
+[aria-hidden="true"] {
+  display: none !important;
+}

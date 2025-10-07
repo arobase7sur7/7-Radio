@@ -1,0 +1,158 @@
+<!DOCTYPE html>
+<html lang="fr">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Radio RP</title>
+    <link rel="stylesheet" href="style.css" />
+  </head>
+  <body>
+    <div id="radio-interface" class="hidden">
+      <div class="radio-device">
+        <div class="radio-screen">
+          <div class="screen-content">
+            <div class="screen-header">
+              <span class="power-indicator"></span>
+              <span class="signal-bars">
+                <span class="bar"></span>
+                <span class="bar"></span>
+                <span class="bar"></span>
+                <span class="bar"></span>
+              </span>
+            </div>
+
+            <div class="frequency-display">
+              <div class="freq-channel">
+                <span class="channel-label">CH1</span>
+                <span class="freq-number" id="primary-display-lcd">---</span>
+                <span class="freq-mhz">MHz</span>
+              </div>
+              <div class="freq-channel secondary">
+                <span class="channel-label">CH2</span>
+                <span class="freq-number" id="secondary-display-lcd">---</span>
+                <span class="freq-mhz">MHz</span>
+              </div>
+            </div>
+
+            <div class="screen-footer">
+              <span class="battery-icon">🔋</span>
+              <span class="volume-icon">🔊</span>
+            </div>
+          </div>
+        </div>
+
+        <div class="speaker-grill">
+          <div class="grill-line"></div>
+          <div class="grill-line"></div>
+          <div class="grill-line"></div>
+          <div class="grill-line"></div>
+          <div class="grill-line"></div>
+          <div class="grill-line"></div>
+        </div>
+
+        <div class="radio-controls">
+          <div class="control-row">
+            <div class="input-group">
+              <label>CANAL 1</label>
+              <input
+                type="number"
+                id="primary-freq"
+                placeholder="100.0"
+                step="0.1"
+              />
+              <button class="btn-set" onclick="setFrequency('primary')">
+                SET
+              </button>
+            </div>
+          </div>
+
+          <div class="control-row">
+            <div class="input-group">
+              <label>CANAL 2</label>
+              <input
+                type="number"
+                id="secondary-freq"
+                placeholder="101.0"
+                step="0.1"
+              />
+              <button class="btn-set" onclick="setFrequency('secondary')">
+                SET
+              </button>
+            </div>
+          </div>
+
+          <div class="control-buttons">
+            <button class="btn-power" onclick="closeRadio()">
+              <span>⏻</span>
+            </button>
+          </div>
+        </div>
+
+        <div class="radio-hint">
+          <span>F10 or /radiochat: Radio Chat</span>
+        </div>
+      </div>
+    </div>
+
+    <div id="chat-interface" class="hidden">
+      <div class="chat-radio-device">
+        <div class="chat-header">
+          <div class="header-display">
+            <div class="active-freq">
+              <span class="freq-indicator pulsing"></span>
+              <span id="chat-freq-display">100.0 MHz</span>
+            </div>
+            <div class="channel-name" id="channel-type">CANAL 1</div>
+          </div>
+          <div class="header-controls">
+            <button class="btn-switch" onclick="switchFrequency()">
+              <span id="switch-icon">↔️</span>
+            </button>
+            <button class="btn-close" onclick="closeChat()">✕</button>
+          </div>
+        </div>
+
+        <div class="audio-visualizer">
+          <div class="wave-bar"></div>
+          <div class="wave-bar"></div>
+          <div class="wave-bar"></div>
+          <div class="wave-bar"></div>
+          <div class="wave-bar"></div>
+          <div class="wave-bar"></div>
+          <div class="wave-bar"></div>
+        </div>
+
+        <div class="messages-container" id="chat-messages"></div>
+
+        <div class="input-zone">
+          <div class="input-wrapper">
+            <input
+              type="text"
+              id="chat-input"
+              placeholder="Your message..."
+              maxlength="250"
+              onkeypress="handleKeyPress(event)"
+            />
+            <button class="btn-send" onclick="sendMessage()">
+              <span>📡</span>
+            </button>
+          </div>
+          <div class="input-info">
+            <span class="char-counter"><span id="char-count">0</span>/250</span>
+            <span class="hint-text">TAB: Change Canal</span>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <audio id="audio-radio-on" preload="auto"></audio>
+    <audio id="audio-radio-off" preload="auto"></audio>
+    <audio id="audio-freq-change" preload="auto"></audio>
+    <audio id="audio-msg-in" preload="auto"></audio>
+    <audio id="audio-msg-sent" preload="auto"></audio>
+    <audio id="audio-button" preload="auto"></audio>
+
+    <script src="https://code.jquery.com/jquery-3.6.0.min.js"></script>
+    <script src="script.js"></script>
+  </body>
+</html>
