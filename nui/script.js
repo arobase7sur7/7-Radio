@@ -243,7 +243,7 @@ function toggleChat(show, primary, secondary, activeFreq) {
 function updateChatFrequencyDisplay() {
   const freq =
     activeFrequency === "primary" ? currentPrimaryFreq : currentSecondaryFreq;
-  const type = activeFrequency === "primary" ? "CANAL 1" : "CANAL 2";
+  const type = activeFrequency === "primary" ? "CHANNEL 1" : "CHANNEL 2";
 
   const displayFreq = freq ? `${freq} MHz` : "---";
   const count = freq ? freqCounts[freq] || 0 : 0;
