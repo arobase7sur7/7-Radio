@@ -18,7 +18,7 @@ ensure 7_radio
 
 3. Add the following table to your database:
 
-   ```sql
+```sql
 CREATE TABLE IF NOT EXISTS `radio_logs` (
   `id` int(11) NOT NULL AUTO_INCREMENT,
   `citizenid` varchar(50) DEFAULT NULL,
