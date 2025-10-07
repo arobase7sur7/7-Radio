@@ -2,6 +2,8 @@
 
 A **FiveM** radio and chat script based on **QBCore**, featuring radio frequency support, a responsive interface, and notifications. The script also allows admins to list active frequencies.
 
+Preview: https://www.youtube.com/watch?v=wEPQeaUvba4
+
 ## :package: Installation
 
 1. Place the script folder in your `resources` directory:
