@@ -150,7 +150,7 @@ RegisterCommand('radio_switch_channel', function()
     SendNUIMessage({ action = 'requestSwitchChannel' })
 end, false)
 
-RegisterKeyMapping('radio_switch_channel', 'Switch canal (chat radio)', 'keyboard', 'TAB')
+RegisterKeyMapping('radio_switch_channel', 'Switch channel (chat radio)', 'keyboard', 'TAB')
 
 
 function GetControlKey(key)
@@ -400,9 +400,9 @@ RegisterNetEvent('7_radio:client:receiveMessage', function(frequency, senderName
             
             local channelLabel = "OTHER"
             if frequency == currentFrequency then
-                channelLabel = "CANAL 1"
+                channelLabel = "channel 1"
             elseif frequency == secondaryFrequency then
-                channelLabel = "CANAL 2"
+                channelLabel = "channel 2"
             end
 
             
