@@ -1,0 +1,275 @@
+<!DOCTYPE html>
+<html lang="fr">
+
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Radio RP</title>
+  <link rel="stylesheet" href="style.css" />
+</head>
+
+<body>
+  <div class="macro-modal-overlay hidden" id="macro-modal-overlay">
+    <div class="macro-modal" id="macro-modal">
+      <div class="macro-modal-header">
+        <div class="header-left">
+          <h3>Macros</h3>
+          <span class="macro-count">0 available</span>
+        </div>
+        <div class="header-actions">
+          <button class="btn-small-add" onclick="openCreateMacro()" title="Create macro">+</button>
+          <button class="btn-modal-close" onclick="toggleMacroModal()">X</button>
+        </div>
+      </div>
+
+      <div class="macro-filters">
+        <div class="search-box">
+          <input type="text" id="macro-search-input" placeholder="Search..." oninput="filterMacros()" />
+        </div>
+        <div class="filter-tabs">
+          <button class="filter-tab active" data-category="all" onclick="setMacroFilter('all')">All</button>
+          <button class="filter-tab" data-category="global" onclick="setMacroFilter('global')">General</button>
+          <button class="filter-tab" data-category="job" onclick="setMacroFilter('job')">Job</button>
+          <button class="filter-tab" data-category="user" onclick="setMacroFilter('user')">Private</button>
+        </div>
+      </div>
+
+      <div class="macro-list" id="macro-list">
+        
+      </div>
+
+      <div class="create-macro-panel hidden" id="create-macro-panel">
+        <div class="panel-header">
+          <h4>New Macro</h4>
+        </div>
+        <div class="panel-body">
+          <div class="form-group">
+            <label>Macro Name</label>
+            <input type="text" id="new-macro-label" placeholder="ex: 10-20" />
+          </div>
+          <div class="form-group">
+            <label>Message Content</label>
+            <input type="text" id="new-macro-value" placeholder="ex: Heading to %location%" />
+            <small>Supports %location%, %hour%, %name%, %surname%, %job%, %rank%, %input% / %input:"question"%</small>
+          </div>
+          <div class="form-group">
+            <label>Description (optional)</label>
+            <input type="text" id="new-macro-desc" placeholder="ex: Signals my current position" />
+          </div>
+        </div>
+        <div class="panel-buttons">
+          <button class="btn-cancel" onclick="closeCreateMacro()">Cancel</button>
+          <button class="btn-confirm" onclick="saveNewMacro()">Save Macro</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div class="input-prompt-overlay hidden" id="input-prompt-overlay">
+    <div class="input-prompt-modal">
+      <div class="prompt-header">
+        <h4 id="prompt-title">Input Required</h4>
+      </div>
+      <div class="prompt-body">
+        <p id="prompt-question">Please provide information:</p>
+        <input type="text" id="prompt-input" placeholder="Type here..."
+          onkeydown="if(event.key==='Enter') submitPrompt()" />
+      </div>
+      <div class="prompt-footer">
+        <button class="btn-confirm" onclick="submitPrompt()">Confirm</button>
+      </div>
+    </div>
+  </div>
+
+  <div id="radio-interface" class="hidden">
+    <div class="radio-device">
+      <div class="radio-screen">
+        <div class="screen-content">
+          <div class="screen-header">
+            <span class="power-indicator"></span>
+            <span class="signal-bars">
+              <span class="bar"></span>
+              <span class="bar"></span>
+              <span class="bar"></span>
+              <span class="bar"></span>
+            </span>
+          </div>
+
+          <div class="frequency-display">
+            <div class="freq-channel">
+              <span class="channel-label">CH1</span>
+              <span class="freq-number" id="primary-display-lcd">---</span>
+              <span class="freq-mhz">MHz</span>
+            </div>
+            <div class="freq-channel secondary">
+              <span class="channel-label">CH2</span>
+              <span class="freq-number" id="secondary-display-lcd">---</span>
+              <span class="freq-mhz">MHz</span>
+            </div>
+          </div>
+
+          <div class="screen-footer">
+            <span class="battery-icon">
+              <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none"
+                stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"
+                class="lucide lucide-battery-full">
+                <rect width="16" height="10" x="2" y="7" rx="2" ry="2" />
+                <line x1="22" x2="22" y1="11" y2="13" />
+              </svg>
+            </span>
+            <span class="volume-icon">
+              <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none"
+                stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"
+                class="lucide lucide-volume-2">
+                <polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5" />
+                <path d="M15.54 8.46a5 5 0 0 1 0 7.07" />
+                <path d="M19.07 4.93a10 10 0 0 1 0 14.14" />
+              </svg>
+            </span>
+          </div>
+        </div>
+      </div>
+
+      <div class="speaker-grill">
+        <div class="grill-line"></div>
+        <div class="grill-line"></div>
+        <div class="grill-line"></div>
+        <div class="grill-line"></div>
+        <div class="grill-line"></div>
+        <div class="grill-line"></div>
+      </div>
+
+      <div class="radio-controls">
+        <div class="control-row">
+          <div class="input-group">
+            <label>CHANNEL 1</label>
+            <input type="number" id="primary-freq" placeholder="100.00" step="0.01" />
+            <button class="btn-set" onclick="setFrequency('primary')">
+              SET
+            </button>
+          </div>
+        </div>
+
+        <div class="control-row">
+          <div class="input-group">
+            <label>CHANNEL 2</label>
+            <input type="number" id="secondary-freq" placeholder="101.00" step="0.01" />
+            <button class="btn-set" onclick="setFrequency('secondary')">
+              SET
+            </button>
+          </div>
+        </div>
+
+        <div class="control-buttons">
+          <button class="btn-power" onclick="closeRadio()">
+            <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none"
+              stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"
+              class="lucide lucide-power">
+              <path d="M12 2v10" />
+              <path d="M18.4 6.6a9 9 0 1 1-12.77.04" />
+            </svg>
+          </button>
+        </div>
+      </div>
+
+
+    </div>
+  </div>
+
+  <div id="chat-interface" class="hidden">
+    <div class="chat-radio-device">
+      <div class="chat-header">
+        <div class="header-display">
+          <div class="active-freq">
+            <span class="freq-indicator pulsing"></span>
+            <span id="chat-freq-display">100.0 MHz</span>
+          </div>
+          <div class="channel-name" id="channel-type" style="color: #fff; font-weight: 700;">CHANNEL 1</div>
+        </div>
+        <div class="header-controls">
+          <button class="btn-pause" id="btn-pause-scroll" onclick="toggleAutoScroll()" title="Toggle Auto-scroll">
+            <svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" fill="none"
+              stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"
+              class="lucide lucide-pause-circle">
+              <circle cx="12" cy="12" r="10" />
+              <line x1="10" y1="15" x2="10" y2="9" />
+              <line x1="14" y1="15" x2="14" y2="9" />
+            </svg>
+          </button>
+          <button class="btn-switch" onclick="switchFrequency()">
+            <span id="switch-icon">
+              <svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" fill="none"
+                stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"
+                class="lucide lucide-arrow-left-right">
+                <path d="m16 3 4 4-4 4" />
+                <path d="M20 7H4" />
+                <path d="m8 21-4-4 4-4" />
+                <path d="M4 17h16" />
+              </svg>
+              <span id="switch-text">CH2</span>
+            </span>
+          </button>
+          <button class="btn-chat-relay" id="btn-chat-relay" onclick="toggleChatRelay()"
+            title="Toggle in-game chat messages for this channel">
+            CHAT OFF
+          </button>
+          <button class="btn-close" onclick="closeChat()">X</button>
+        </div>
+      </div>
+
+      <div class="audio-visualizer">
+        <div class="wave-bar"></div>
+        <div class="wave-bar"></div>
+        <div class="wave-bar"></div>
+        <div class="wave-bar"></div>
+        <div class="wave-bar"></div>
+        <div class="wave-bar"></div>
+        <div class="wave-bar"></div>
+      </div>
+
+      <div class="messages-container" id="chat-messages"></div>
+
+      <div class="input-zone">
+        <div class="input-wrapper">
+          <button class="btn-macro" title="Macros">
+            <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none"
+              stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+              <path d="m21 17-6.01-6L21 5" />
+              <path d="m15 17-6-6 6-6" />
+              <path d="m9 17-6-6 6-6" />
+            </svg>
+          </button>
+          <input type="text" id="chat-input" placeholder="Type a message..." maxlength="250"
+            onkeypress="handleKeyPress(event)" />
+          <button class="btn-send" onclick="sendMessage()">
+            <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none"
+              stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+              <line x1="22" y1="2" x2="11" y2="13" />
+              <polygon points="22 2 15 22 11 13 2 9 22 2" />
+            </svg>
+          </button>
+        </div>
+        <div class="input-info">
+          <span class="char-counter"><span id="char-count">0</span>/250</span>
+          <span class="hint-text">Placeholders: %location%, %hour%, %job%, %rank%</span>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <audio id="audio-radio-on" preload="auto"></audio>
+  <audio id="audio-radio-off" preload="auto"></audio>
+  <audio id="audio-freq-change" preload="auto"></audio>
+  <audio id="audio-msg-in" preload="auto"></audio>
+  <audio id="audio-msg-sent" preload="auto"></audio>
+  <audio id="audio-button" preload="auto"></audio>
+
+  <script src="https://code.jquery.com/jquery-3.6.0.min.js"></script>
+  <script src="script.js"></script>
+</body>
+
+</html>
+
+
+
+
