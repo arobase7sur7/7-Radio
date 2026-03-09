@@ -50,8 +50,7 @@ ensure 7_radio
 ```
 
 3. Database:
-- New install: run `AddToDatabase.sql`.
-- Existing install update: run `migration.sql` once.
+- run `AddToDatabase.sql`.
 
 4. Restart the server.
 
@@ -73,15 +72,6 @@ Requires ACE/admin job as configured in server-side checks.
 - `F9` - Open/close radio
 - `F10` - Open/close radio chat
 - `TAB` - Switch active chat channel
-
-## SQL Notes
-
-This resource uses:
-
-- `radio_history`
-- `radio_macros`
-
-Legacy `radio_logs` is no longer required by the current code path.
 
 ## Configuration
 
