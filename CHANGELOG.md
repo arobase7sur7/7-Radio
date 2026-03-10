@@ -16,7 +16,7 @@
 - Updated private frequency visual feedback (color theme per channel/frequency).
 - Optimized message history logging path and SQL indexes.
 - Added confirmation dialog before deleting a personal macro.
-- Added full LSPD 10-code and CODE 1-6 macro set with callsign input prefix.
+- Added some macro example.
 
 ### Database
 
