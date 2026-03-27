@@ -3,7 +3,7 @@ game 'gta5'
 
 author '7sur7'
 description 'Radio RP Text for QBCore'
-version '1.0.0'
+version '1.1.1'
 
 shared_scripts {
     'config.lua',
