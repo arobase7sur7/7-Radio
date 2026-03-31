@@ -1115,3 +1115,160 @@ input:focus-visible {
   font-size: 13px;
 }
 
+#nui-root {
+  position: relative;
+  width: 100%;
+  height: 100%;
+  background: rgba(0, 0, 0, 0);
+}
+
+.radio-device {
+  padding: 22px;
+  border-radius: 20px;
+  box-shadow: 0 18px 44px rgba(0, 0, 0, 0.82);
+}
+
+.chat-radio-device {
+  border-radius: 18px;
+  box-shadow: 0 18px 48px rgba(0, 0, 0, 0.82);
+}
+
+.chat-header {
+  padding: 12px 16px;
+}
+
+.messages-container {
+  padding: 14px 16px;
+}
+
+.message-content {
+  border-radius: 12px;
+  padding: 11px 13px;
+}
+
+.input-zone {
+  position: relative;
+  padding: 12px 14px;
+}
+
+.input-wrapper {
+  gap: 10px;
+}
+
+#chat-input {
+  height: 44px;
+}
+
+.btn-send,
+.btn-macro {
+  width: 42px;
+  height: 42px;
+}
+
+.macro-empty {
+  padding: 14px;
+  color: var(--muted);
+  text-align: center;
+  background: rgba(255, 255, 255, 0.03);
+  border-radius: 10px;
+  border: 1px solid rgba(255, 255, 255, 0.06);
+}
+
+.macro-suggestions {
+  margin-top: 8px;
+  max-height: 210px;
+  overflow-y: auto;
+  border-radius: 10px;
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  background: rgba(8, 8, 8, 0.94);
+}
+
+.macro-suggestion-item {
+  padding: 8px 10px;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.05);
+  cursor: pointer;
+  transition: background 0.15s ease;
+}
+
+.macro-suggestion-item:last-child {
+  border-bottom: none;
+}
+
+.macro-suggestion-item:hover,
+.macro-suggestion-item.active {
+  background: rgba(0, 255, 163, 0.14);
+}
+
+.macro-suggestion-label {
+  color: var(--accent-green);
+  font-weight: 700;
+  font-size: 12px;
+  margin-bottom: 2px;
+}
+
+.macro-suggestion-value {
+  color: #dde2df;
+  font-size: 12px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.macro-suggestion-empty {
+  color: var(--muted);
+  font-size: 12px;
+  padding: 10px;
+  text-align: center;
+}
+
+.delete-macro-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 17000;
+  background: rgba(0, 0, 0, 0.8);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.delete-macro-modal {
+  width: min(360px, 88vw);
+  background: #151515;
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  border-radius: 14px;
+  padding: 18px;
+  box-shadow: 0 20px 48px rgba(0, 0, 0, 0.8);
+}
+
+.delete-macro-modal h4 {
+  color: #f2f2f2;
+  margin-bottom: 8px;
+  font-size: 16px;
+}
+
+.delete-macro-modal p {
+  color: #b8bdb9;
+  font-size: 13px;
+  line-height: 1.4;
+  margin-bottom: 12px;
+}
+
+.delete-macro-error {
+  display: block;
+  color: #ff7777;
+  font-size: 12px;
+  min-height: 16px;
+  margin-bottom: 10px;
+}
+
+.delete-macro-actions {
+  display: flex;
+  gap: 10px;
+}
+
+.delete-macro-actions .btn-cancel,
+.delete-macro-actions .btn-confirm {
+  flex: 1;
+  padding: 11px 0;
+}
+

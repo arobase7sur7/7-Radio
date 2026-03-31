@@ -1,472 +1,688 @@
 local QBCore = exports['qb-core']:GetCoreObject()
+
 local PlayerData = {}
-local radioOpen = false
-local chatOpen = false
-local currentFrequency = nil
-local secondaryFrequency = nil
-local activeFrequency = 'primary' 
-local radioItem = Config.RadioItem 
+local radioItem = Config.RadioItem
 
-local radioNotifyCooldownMs = 5000 
-local lastRadioNotify = {}         
-
-
-local radioNotifyPreviewLength = 80 
-local radioNotifyEnablePreview = true 
-local chatRelayEnabled = {
-    primary = false,
-    secondary = false
+local radioState = {
+    radioOpen = false,
+    chatOpen = false,
+    primary = nil,
+    secondary = nil,
+    active = 'primary',
+    chatRelay = {
+        primary = false,
+        secondary = false
+    }
 }
 
+local radioNotifyCooldownMs = 5000
+local radioNotifyPreviewLength = 80
+local radioNotifyEnablePreview = true
+local lastRadioNotify = {}
 
-CreateThread(function()
-    PlayerData = QBCore.Functions.GetPlayerData()
-    
-    
-    Wait(1000)
-    SendNUIMessage({
-        action = 'setSounds',
-        enabled = Config.Sounds.enabled,
-        volume = Config.Sounds.volume
-    })
-end)
+local statePersistencePrefix = '7_radio:state:'
+local persistenceVersion = 1
+local hasRestoredState = false
+local restoreInProgress = false
 
-RegisterNetEvent('QBCore:Client:OnPlayerLoaded', function()
-    PlayerData = QBCore.Functions.GetPlayerData()
-end)
-
-local function NormalizeFrequencyLabel(frequency)
-    local freq = tonumber(frequency)
-    if freq then
-        return string.format('%.2f', freq)
+local function normalizeFrequencyLabel(value)
+    if value == nil then
+        return nil
     end
-    return tostring(frequency or '')
+
+    local raw = tostring(value):gsub(',', '.')
+    raw = raw:match('^%s*(.-)%s*$')
+
+    local num = tonumber(raw)
+    if not num then
+        return nil
+    end
+
+    return string.format('%.2f', num)
 end
 
-local function GetChannelForFrequency(frequency)
-    local freqLabel = NormalizeFrequencyLabel(frequency)
+local function parseFrequency(value)
+    local label = normalizeFrequencyLabel(value)
+    if not label then
+        return nil, nil
+    end
 
-    if currentFrequency and NormalizeFrequencyLabel(currentFrequency) == freqLabel then
+    local num = tonumber(label)
+    if not num then
+        return nil, nil
+    end
+
+    if num < Config.MinFrequency or num > Config.MaxFrequency then
+        return nil, nil
+    end
+
+    return label, num
+end
+
+local function parseJobEntry(entry)
+    local raw = tostring(entry or '')
+    local jobName, condition = raw:match('^([^:]+):(.+)$')
+    if not jobName then
+        return raw, nil
+    end
+    return jobName, condition
+end
+
+local function evaluateCondition(condition, grade)
+    if type(condition) ~= 'string' or condition == '' then
+        return nil
+    end
+
+    if condition:sub(1, 4) == 'from' then
+        local minGrade = tonumber(condition:sub(5))
+        if minGrade then
+            return grade >= minGrade
+        end
+    elseif condition:sub(1, 5) == 'fixed' then
+        local fixedGrade = tonumber(condition:sub(6))
+        if fixedGrade then
+            return grade == fixedGrade
+        end
+    end
+
+    return nil
+end
+
+function HasAccessToFrequency(frequency)
+    if not PlayerData.job or type(Config.RestrictedFrequencies) ~= 'table' then
+        return true
+    end
+
+    local freqLabel = normalizeFrequencyLabel(frequency)
+    if not freqLabel then
+        return false
+    end
+
+    local freqNum = tonumber(freqLabel) or 0
+
+    for _, restriction in ipairs(Config.RestrictedFrequencies) do
+        local match = false
+
+        if restriction.freq then
+            local target = normalizeFrequencyLabel(restriction.freq)
+            if target and target == freqLabel then
+                match = true
+            end
+        elseif restriction.min and restriction.max and freqNum >= restriction.min and freqNum <= restriction.max then
+            match = true
+        end
+
+        if match then
+            local allowedJobs = restriction.jobs
+            if type(allowedJobs) ~= 'table' or #allowedJobs == 0 then
+                return true
+            end
+
+            local playerJob = (PlayerData.job and PlayerData.job.name) or 'unknown'
+            local playerGrade = (PlayerData.job and PlayerData.job.grade and PlayerData.job.grade.level) or 0
+
+            local jobMatch = false
+            local conditionedMatch = nil
+
+            for _, entry in ipairs(allowedJobs) do
+                local jobName, condition = parseJobEntry(entry)
+                if playerJob == jobName then
+                    jobMatch = true
+                    conditionedMatch = evaluateCondition(condition, playerGrade)
+                    break
+                end
+            end
+
+            if not jobMatch then
+                return false
+            end
+
+            if conditionedMatch ~= nil then
+                return conditionedMatch
+            end
+
+            if restriction.fixedGrade then
+                return playerGrade == restriction.fixedGrade
+            end
+
+            if restriction.minGrade then
+                return playerGrade >= restriction.minGrade
+            end
+
+            return true
+        end
+    end
+
+    return true
+end
+
+local function getChannelForFrequency(frequency)
+    local label = normalizeFrequencyLabel(frequency)
+    if not label then
+        return nil
+    end
+
+    if radioState.primary and radioState.primary == label then
         return 'primary'
     end
 
-    if secondaryFrequency and NormalizeFrequencyLabel(secondaryFrequency) == freqLabel then
+    if radioState.secondary and radioState.secondary == label then
         return 'secondary'
     end
 
     return nil
 end
 
-local function StripGpsTokenFromMessage(message)
-    if not message then return '' end
-    return tostring(message):gsub("%%gpslink|([^|]+)|[^|]+|[^|]+|[^%%]+%%", "%1")
+local function stripGpsTokenFromMessage(message)
+    if not message then
+        return ''
+    end
+    return tostring(message):gsub('%%gpslink|([^|]+)|[^|]+|[^|]+|[^%%]+%%', '%1')
 end
 
-local function SyncFrequencyStateToNui()
+local function getCitizenId()
+    if PlayerData and PlayerData.citizenid then
+        return PlayerData.citizenid
+    end
+
+    local data = QBCore.Functions.GetPlayerData()
+    if data then
+        PlayerData = data
+    end
+
+    if PlayerData and PlayerData.citizenid then
+        return PlayerData.citizenid
+    end
+
+    return nil
+end
+
+local function getStateStorageKey()
+    local citizenId = getCitizenId()
+    if not citizenId then
+        return nil
+    end
+    return statePersistencePrefix .. tostring(citizenId)
+end
+
+local function applyActiveFallback()
+    if radioState.active == 'primary' and not radioState.primary and radioState.secondary then
+        radioState.active = 'secondary'
+    elseif radioState.active == 'secondary' and not radioState.secondary and radioState.primary then
+        radioState.active = 'primary'
+    elseif not radioState.primary and not radioState.secondary then
+        radioState.active = 'primary'
+    end
+
+    if radioState.active ~= 'primary' and radioState.active ~= 'secondary' then
+        radioState.active = 'primary'
+    end
+end
+
+local function persistRadioState()
+    local key = getStateStorageKey()
+    if not key then
+        return
+    end
+
+    local payload = {
+        version = persistenceVersion,
+        primary = radioState.primary,
+        secondary = radioState.secondary,
+        active = radioState.active,
+        relay = {
+            primary = radioState.chatRelay.primary,
+            secondary = radioState.chatRelay.secondary
+        }
+    }
+
+    SetResourceKvp(key, json.encode(payload))
+end
+
+local function syncFrequencyStateToNui()
     SendNUIMessage({
         action = 'syncFrequencies',
-        primary = currentFrequency,
-        secondary = secondaryFrequency,
-        activeFreq = activeFrequency,
-        primaryChatRelay = chatRelayEnabled.primary,
-        secondaryChatRelay = chatRelayEnabled.secondary
+        primary = radioState.primary,
+        secondary = radioState.secondary,
+        activeFreq = radioState.active,
+        primaryChatRelay = radioState.chatRelay.primary,
+        secondaryChatRelay = radioState.chatRelay.secondary
     })
+
+    persistRadioState()
 end
 
-RegisterNetEvent('QBCore:Client:OnJobUpdate', function(JobInfo)
-    PlayerData.job = JobInfo
-    
-    if currentFrequency then
-        if not HasAccessToFrequency(currentFrequency) then
-            QBCore.Functions.Notify('You no longer have access to this frequency', 'error')
-            TriggerServerEvent('7_radio:server:leaveFrequency', currentFrequency)
-            currentFrequency = nil
-            chatRelayEnabled.primary = false
-        end
-    end
-    if secondaryFrequency then
-        if not HasAccessToFrequency(secondaryFrequency) then
-            QBCore.Functions.Notify('You no longer have access to the secondary frequency', 'error')
-            TriggerServerEvent('7_radio:server:leaveFrequency', secondaryFrequency)
-            secondaryFrequency = nil
-            chatRelayEnabled.secondary = false
+local function buildMacroSetsPayload()
+    local sets = {}
+
+    for key, value in pairs(Config) do
+        if type(key) == 'string' and key:sub(-6) == 'Macros' and type(value) == 'table' then
+            sets[key] = value
         end
     end
 
-    if activeFrequency == 'primary' and not currentFrequency and secondaryFrequency then
-        activeFrequency = 'secondary'
-    elseif activeFrequency == 'secondary' and not secondaryFrequency and currentFrequency then
-        activeFrequency = 'primary'
-    elseif not currentFrequency and not secondaryFrequency then
-        activeFrequency = 'primary'
+    if type(Config.GlobalMacros) == 'table' then
+        sets.GlobalMacros = Config.GlobalMacros
     end
 
-    SyncFrequencyStateToNui()
-end)
-
-
-function HasAccessToFrequency(frequency)
-    if not PlayerData.job or not Config.RestrictedFrequencies then return true end
-    
-    local freqStr = tostring(frequency)
-    if tonumber(frequency) then
-        freqStr = string.format("%.2f", tonumber(frequency))
-    end
-    
-    for _, restriction in ipairs(Config.RestrictedFrequencies) do
-        local isMatch = false
-        
-        if restriction.freq then
-            if tostring(restriction.freq) == freqStr then
-                isMatch = true
-            end
-        elseif restriction.min and restriction.max then
-            local freqNum = tonumber(frequency) or 0
-            if freqNum >= restriction.min and freqNum <= restriction.max then
-                isMatch = true
-            end
-        end
-        
-        if isMatch then
-            local jobMatch = false
-            local specificGradeMatch = nil
-
-            local jobName = (PlayerData.job and PlayerData.job.name) or "unknown"
-            local grade = (PlayerData.job and PlayerData.job.grade and PlayerData.job.grade.level) or 0
-
-            for _, allowedJobEntry in ipairs(restriction.jobs) do
-                local allowedJobName = allowedJobEntry
-                local condition = nil
-
-                if string.find(allowedJobEntry, ":") then
-                    local parts = {}
-                    for s in string.gmatch(allowedJobEntry, "([^:]+)") do
-                        table.insert(parts, s)
-                    end
-                    allowedJobName = parts[1]
-                    condition = parts[2]
-                end
-
-                if jobName == allowedJobName then
-                    jobMatch = true
-                    if condition then
-                        local grade = (PlayerData.job and PlayerData.job.grade and PlayerData.job.grade.level) or 0
-                        if string.sub(condition, 1, 4) == "from" then
-                            local minG = tonumber(string.sub(condition, 5))
-                            if minG then
-                                specificGradeMatch = (grade >= minG)
-                            end
-                        elseif string.sub(condition, 1, 5) == "fixed" then
-                            local fixG = tonumber(string.sub(condition, 6))
-                            if fixG then
-                                specificGradeMatch = (grade == fixG)
-                            end
-                        end
-                    end
-                    break
-                end
-            end
-            
-            if jobMatch then
-                if specificGradeMatch ~= nil then
-                    return specificGradeMatch
-                end
-
-                if restriction.fixedGrade then
-                    return grade == restriction.fixedGrade
-                end
-                if restriction.minGrade then
-                    return grade >= restriction.minGrade
-                end
-                return true
-            end
-            return false
-        end
-    end
-    
-    return true
+    return sets
 end
 
-
-function HasRadio()
-    if radioItem == "none" or radioItem == false then
-        return true
-    end
-    return QBCore.Functions.HasItem(radioItem)
-end
-
-
-
-RegisterCommand('radio', function()
-    if not HasRadio() then
-        QBCore.Functions.Notify('You don\'t have radio', 'error')
-        return
-    end
-    ToggleRadioUI()
-end)
-
-
-RegisterCommand('radiochat', function()
-    if not currentFrequency and not secondaryFrequency then
-        QBCore.Functions.Notify('You are not connected to any frequency', 'error')
-        return
-    end
-    if not HasRadio() then
-        QBCore.Functions.Notify('You don\'t have radio', 'error')
-        return
-    end
-    ToggleChatUI()
-end)
-
-
-
-
-
-
-RegisterCommand('radio_toggle', function()
-    if not HasRadio() then
-        QBCore.Functions.Notify('You don\'t have radio', 'error')
-        return
-    end
-
-    ToggleRadioUI()
-end, false)
-
-
-RegisterCommand('radio_chat_toggle', function()
-    if not currentFrequency and not secondaryFrequency then
-        QBCore.Functions.Notify('You are not connected to any frequency', 'error')
-        return
-    end
-    if not HasRadio() then
-        QBCore.Functions.Notify('You don\'t have radio', 'error')
-        return
-    end
-
-    ToggleChatUI()
-end, false)
-
-
-RegisterKeyMapping('radio_toggle', 'Open / Close radio', 'keyboard', 'F9')
-RegisterKeyMapping('radio_chat_toggle', 'Open / Close radio chat', 'keyboard', 'F10')
-
-
-RegisterCommand('radio_switch_channel', function()
-    SendNUIMessage({ action = 'requestSwitchChannel' })
-end, false)
-
-RegisterKeyMapping('radio_switch_channel', 'Switch channel (chat radio)', 'keyboard', 'TAB')
-RegisterKeyMapping('radio_switch_channel', 'Switch channel (chat radio)', 'keyboard', 'TAB')
-
-
-function GetControlKey(key)
-    local keys = {
-        ['F9'] = 56,
-        ['F10'] = 57,
-        ['TAB'] = 37
-    }
-    return keys[key] or 56
-end
-
-
-local function CloseNuiClean()
-  
+local function closeNuiClean()
     SendNUIMessage({ action = 'forceHideAll' })
-    
 
     SetNuiFocus(false, false)
     SetNuiFocusKeepInput(false)
-    
+
     if SetCursorLocation then
         SetCursorLocation(0.5, 0.5)
     end
-    
 
     Citizen.SetTimeout(100, function()
         SetNuiFocus(false, false)
     end)
 end
-function ToggleRadioUI()
-    radioOpen = not radioOpen
 
-    if radioOpen then
-        
+function HasRadio()
+    if radioItem == 'none' or radioItem == false then
+        return true
+    end
+    return QBCore.Functions.HasItem(radioItem)
+end
+
+local function validatePersistedFrequency(value)
+    local frequency = normalizeFrequencyLabel(value)
+    if not frequency then
+        return nil
+    end
+
+    local num = tonumber(frequency)
+    if not num or num < Config.MinFrequency or num > Config.MaxFrequency then
+        return nil
+    end
+
+    if not HasAccessToFrequency(frequency) then
+        return nil
+    end
+
+    return frequency
+end
+
+local function restorePersistedState()
+    if hasRestoredState or restoreInProgress then
+        return
+    end
+
+    local key = getStateStorageKey()
+    if not key then
+        return
+    end
+
+    restoreInProgress = true
+
+    local raw = GetResourceKvpString(key)
+    local restored = false
+
+    if raw and raw ~= '' then
+        local ok, data = pcall(json.decode, raw)
+        if ok and type(data) == 'table' then
+            local primary = validatePersistedFrequency(data.primary)
+            local secondary = validatePersistedFrequency(data.secondary)
+
+            if primary and secondary and primary == secondary then
+                secondary = nil
+            end
+
+            local relayPrimary = false
+            local relaySecondary = false
+            if type(data.relay) == 'table' then
+                relayPrimary = data.relay.primary == true
+                relaySecondary = data.relay.secondary == true
+            end
+
+            radioState.primary = nil
+            radioState.secondary = nil
+            radioState.chatRelay.primary = false
+            radioState.chatRelay.secondary = false
+
+            TriggerServerEvent('7_radio:server:resetPlayerFrequencies')
+
+            if primary then
+                radioState.primary = primary
+                TriggerServerEvent('7_radio:server:joinFrequency', primary, true)
+                radioState.chatRelay.primary = relayPrimary
+            end
+
+            if secondary then
+                radioState.secondary = secondary
+                TriggerServerEvent('7_radio:server:joinFrequency', secondary, false)
+                radioState.chatRelay.secondary = relaySecondary
+            end
+
+            radioState.active = tostring(data.active or 'primary') == 'secondary' and 'secondary' or 'primary'
+            applyActiveFallback()
+            syncFrequencyStateToNui()
+            restored = true
+        end
+    end
+
+    if not restored then
+        applyActiveFallback()
+        syncFrequencyStateToNui()
+    end
+
+    hasRestoredState = true
+    restoreInProgress = false
+end
+
+local function scheduleStateRestore()
+    if hasRestoredState or restoreInProgress then
+        return
+    end
+
+    CreateThread(function()
+        for _ = 1, 80 do
+            local data = QBCore.Functions.GetPlayerData()
+            if data then
+                PlayerData = data
+            end
+
+            if PlayerData and PlayerData.citizenid and PlayerData.job then
+                restorePersistedState()
+                return
+            end
+
+            Wait(250)
+        end
+    end)
+end
+
+CreateThread(function()
+    PlayerData = QBCore.Functions.GetPlayerData() or {}
+
+    Wait(1000)
+    SendNUIMessage({
+        action = 'setSounds',
+        enabled = Config.Sounds.enabled,
+        volume = Config.Sounds.volume
+    })
+
+    scheduleStateRestore()
+end)
+
+
+AddEventHandler('onClientResourceStart', function(resourceName)
+    if resourceName ~= GetCurrentResourceName() then
+        return
+    end
+
+    scheduleStateRestore()
+end)
+
+RegisterNetEvent('QBCore:Client:OnPlayerLoaded', function()
+    PlayerData = QBCore.Functions.GetPlayerData() or {}
+    hasRestoredState = false
+    restoreInProgress = false
+    scheduleStateRestore()
+end)
+
+RegisterNetEvent('QBCore:Client:OnPlayerUnload', function()
+    TriggerServerEvent('7_radio:server:resetPlayerFrequencies')
+
+    radioState.radioOpen = false
+    radioState.chatOpen = false
+    radioState.primary = nil
+    radioState.secondary = nil
+    radioState.active = 'primary'
+    radioState.chatRelay.primary = false
+    radioState.chatRelay.secondary = false
+
+    PlayerData = {}
+    hasRestoredState = false
+    restoreInProgress = false
+
+    closeNuiClean()
+end)
+
+RegisterNetEvent('QBCore:Client:OnJobUpdate', function(jobInfo)
+    PlayerData.job = jobInfo
+
+    if radioState.primary and not HasAccessToFrequency(radioState.primary) then
+        QBCore.Functions.Notify('You no longer have access to this frequency', 'error')
+        TriggerServerEvent('7_radio:server:leaveFrequency', radioState.primary)
+        radioState.primary = nil
+        radioState.chatRelay.primary = false
+    end
+
+    if radioState.secondary and not HasAccessToFrequency(radioState.secondary) then
+        QBCore.Functions.Notify('You no longer have access to the secondary frequency', 'error')
+        TriggerServerEvent('7_radio:server:leaveFrequency', radioState.secondary)
+        radioState.secondary = nil
+        radioState.chatRelay.secondary = false
+    end
+
+    applyActiveFallback()
+    syncFrequencyStateToNui()
+end)
+
+function ToggleRadioUI()
+    radioState.radioOpen = not radioState.radioOpen
+
+    if radioState.radioOpen then
         SendNUIMessage({
             action = 'toggleRadio',
             show = true,
-            primary = currentFrequency,
-            secondary = secondaryFrequency,
+            primary = radioState.primary,
+            secondary = radioState.secondary,
             globalMacros = Config.GlobalMacros or {},
-            allMacroSets = {
-                PoliceMacros = Config.PoliceMacros,
-                EMSMacros = Config.EMSMacros,
-                GeneralMacros = Config.GlobalMacros
-            }
+            allMacroSets = buildMacroSetsPayload()
         })
-        
+
         Citizen.SetTimeout(10, function()
             SetNuiFocus(true, true)
-            
             SetNuiFocusKeepInput(false)
         end)
-    else
-        
-        SendNUIMessage({
-            action = 'toggleRadio',
-            show = false
-        })
-        CloseNuiClean()
+        return
     end
-end
 
+    SendNUIMessage({
+        action = 'toggleRadio',
+        show = false
+    })
+    closeNuiClean()
+end
 
 function ToggleChatUI()
-    chatOpen = not chatOpen
+    radioState.chatOpen = not radioState.chatOpen
 
-    if chatOpen then
+    if radioState.chatOpen then
         SendNUIMessage({
             action = 'toggleChat',
             show = true,
-            primary = currentFrequency,
-            secondary = secondaryFrequency,
-            activeFreq = activeFrequency,
-            primaryChatRelay = chatRelayEnabled.primary,
-            secondaryChatRelay = chatRelayEnabled.secondary,
+            primary = radioState.primary,
+            secondary = radioState.secondary,
+            activeFreq = radioState.active,
+            primaryChatRelay = radioState.chatRelay.primary,
+            secondaryChatRelay = radioState.chatRelay.secondary,
             globalMacros = Config.GlobalMacros or {},
-            allMacroSets = {
-                PoliceMacros = Config.PoliceMacros,
-                EMSMacros = Config.EMSMacros,
-                GeneralMacros = Config.GlobalMacros
-            }
+            allMacroSets = buildMacroSetsPayload()
         })
+
         Citizen.SetTimeout(10, function()
             SetNuiFocus(true, true)
             SetNuiFocusKeepInput(false)
         end)
-    else
-        SendNUIMessage({
-            action = 'toggleChat',
-            show = false
-        })
-        CloseNuiClean()
+        return
     end
+
+    SendNUIMessage({
+        action = 'toggleChat',
+        show = false
+    })
+    closeNuiClean()
 end
+
+local function ensureRadioAccessOrNotify()
+    if HasRadio() then
+        return true
+    end
+
+    QBCore.Functions.Notify('You do not have a radio', 'error')
+    return false
+end
+
+RegisterCommand('radio', function()
+    if not ensureRadioAccessOrNotify() then
+        return
+    end
+    ToggleRadioUI()
+end)
+
+RegisterCommand('radiochat', function()
+    if not radioState.primary and not radioState.secondary then
+        QBCore.Functions.Notify('You are not connected to any frequency', 'error')
+        return
+    end
+
+    if not ensureRadioAccessOrNotify() then
+        return
+    end
+
+    ToggleChatUI()
+end)
+
+RegisterCommand('radio_toggle', function()
+    if not ensureRadioAccessOrNotify() then
+        return
+    end
+
+    ToggleRadioUI()
+end, false)
+
+RegisterCommand('radio_chat_toggle', function()
+    if not radioState.primary and not radioState.secondary then
+        QBCore.Functions.Notify('You are not connected to any frequency', 'error')
+        return
+    end
+
+    if not ensureRadioAccessOrNotify() then
+        return
+    end
+
+    ToggleChatUI()
+end, false)
+
+RegisterKeyMapping('radio_toggle', 'Open / Close radio', 'keyboard', Config.OpenRadioKey or 'F9')
+RegisterKeyMapping('radio_chat_toggle', 'Open / Close radio chat', 'keyboard', Config.OpenChatKey or 'F10')
+
+RegisterCommand('radio_switch_channel', function()
+    SendNUIMessage({ action = 'requestSwitchChannel' })
+end, false)
+
+RegisterKeyMapping('radio_switch_channel', 'Switch channel (chat radio)', 'keyboard', Config.SwitchFrequencyKey or 'TAB')
 
 RegisterNUICallback('close', function(data, cb)
     if data.type == 'radio' then
-        radioOpen = false
+        radioState.radioOpen = false
     elseif data.type == 'chat' then
-        chatOpen = false
+        radioState.chatOpen = false
     end
 
-    
     SendNUIMessage({ action = 'toggleRadio', show = false })
     SendNUIMessage({ action = 'toggleChat', show = false })
-    CloseNuiClean()
+    closeNuiClean()
 
     cb('ok')
 end)
 
-RegisterNUICallback('nuiClosed', function(data, cb)
-    radioOpen = false
-    chatOpen = false
-    CloseNuiClean()
-
-    cb('ok')
-end)
-
-RegisterNUICallback('openChatFromRadio', function(data, cb)
-    
-    radioOpen = false
-    SendNUIMessage({ action = 'toggleRadio', show = false })
-    CloseNuiClean()
-    
-    Citizen.SetTimeout(120, function()
-        if not chatOpen then
-            ToggleChatUI()
-        end
-    end)
+RegisterNUICallback('nuiClosed', function(_, cb)
+    radioState.radioOpen = false
+    radioState.chatOpen = false
+    closeNuiClean()
     cb('ok')
 end)
 
 RegisterNUICallback('setFrequency', function(data, cb)
-    local frequency = tostring(data.frequency)
-    local isPrimary = data.isPrimary
-    local normalizedNewFrequency = NormalizeFrequencyLabel(frequency)
-    
-    
-    local freq = tonumber(frequency)
-    if freq < Config.MinFrequency or freq > Config.MaxFrequency then
+    local frequency = data and data.frequency
+    local isPrimary = data and data.isPrimary == true
+
+    local freqLabel = parseFrequency(frequency)
+    if not freqLabel then
         QBCore.Functions.Notify('Invalid frequency', 'error')
-        cb({success = false})
+        cb({ success = false })
         return
     end
-    
-    
-    if not HasAccessToFrequency(frequency) then
+
+    if not HasAccessToFrequency(freqLabel) then
         QBCore.Functions.Notify('You do not have access to this frequency', 'error')
-        cb({success = false})
+        cb({ success = false })
         return
     end
-    
-    
-    if isPrimary and currentFrequency then
-        TriggerServerEvent('7_radio:server:leaveFrequency', currentFrequency)
-    elseif not isPrimary and secondaryFrequency then
-        TriggerServerEvent('7_radio:server:leaveFrequency', secondaryFrequency)
+
+    local channel = isPrimary and 'primary' or 'secondary'
+    local otherChannel = isPrimary and 'secondary' or 'primary'
+    local current = radioState[channel]
+    local otherFrequency = radioState[otherChannel]
+
+    if current and current ~= freqLabel then
+        radioState.chatRelay[channel] = false
+        if otherFrequency ~= current then
+            TriggerServerEvent('7_radio:server:leaveFrequency', current)
+        end
     end
-    
-    
-    TriggerServerEvent('7_radio:server:joinFrequency', frequency, isPrimary)
-    
+
+    if current ~= freqLabel and otherFrequency ~= freqLabel then
+        TriggerServerEvent('7_radio:server:joinFrequency', freqLabel, isPrimary)
+    end
+
+    radioState[channel] = freqLabel
     if isPrimary then
-        if currentFrequency and NormalizeFrequencyLabel(currentFrequency) ~= normalizedNewFrequency then
-            chatRelayEnabled.primary = false
-        end
-        currentFrequency = frequency
-        activeFrequency = 'primary'
-    else
-        if secondaryFrequency and NormalizeFrequencyLabel(secondaryFrequency) ~= normalizedNewFrequency then
-            chatRelayEnabled.secondary = false
-        end
-        secondaryFrequency = frequency
+        radioState.active = 'primary'
     end
-    
-    SyncFrequencyStateToNui()
-    QBCore.Functions.Notify('' .. (isPrimary and 'principal' or 'secondary') .. ' frequency set on ' .. frequency, 'success')
+
+    applyActiveFallback()
+    syncFrequencyStateToNui()
+
+    QBCore.Functions.Notify((isPrimary and 'Primary' or 'Secondary') .. ' frequency set to ' .. freqLabel, 'success')
+
     cb({
         success = true,
-        primary = currentFrequency,
-        secondary = secondaryFrequency,
-        activeFreq = activeFrequency,
-        primaryChatRelay = chatRelayEnabled.primary,
-        secondaryChatRelay = chatRelayEnabled.secondary
+        primary = radioState.primary,
+        secondary = radioState.secondary,
+        activeFreq = radioState.active,
+        primaryChatRelay = radioState.chatRelay.primary,
+        secondaryChatRelay = radioState.chatRelay.secondary
     })
 end)
 
 RegisterNUICallback('sendMessage', function(data, cb)
-    local message = data.message
-    local frequency = data.frequency
-    
-    if not message or message == '' then
-        cb({success = false})
+    local message = tostring((data and data.message) or '')
+    message = message:match('^%s*(.-)%s*$')
+    local frequency = normalizeFrequencyLabel(data and data.frequency)
+
+    if message == '' then
+        cb({ success = false })
         return
     end
-    
+
     if #message > Config.MaxMessageLength then
         QBCore.Functions.Notify('Message too long', 'error')
-        cb({success = false})
+        cb({ success = false })
         return
     end
-    
-    
+
+    if not frequency then
+        QBCore.Functions.Notify('Invalid frequency', 'error')
+        cb({ success = false })
+        return
+    end
+
     if not HasAccessToFrequency(frequency) then
         QBCore.Functions.Notify('You do not have access to this frequency', 'error')
-        cb({success = false})
+        cb({ success = false })
         return
     end
-    
-    
+
     if Config.UseAnimation then
         local ped = PlayerPedId()
         RequestAnimDict(Config.AnimationDict)
@@ -477,194 +693,210 @@ RegisterNUICallback('sendMessage', function(data, cb)
         Wait(1000)
         StopAnimTask(ped, Config.AnimationDict, Config.AnimationName, 1.0)
     end
-    
-    
+
     TriggerServerEvent('7_radio:server:sendMessage', frequency, message)
-    cb({success = true})
+    cb({ success = true })
 end)
 
-RegisterNUICallback('switchFrequency', function(data, cb)
-    if activeFrequency == 'primary' and secondaryFrequency then
-        activeFrequency = 'secondary'
-    elseif activeFrequency == 'secondary' and currentFrequency then
-        activeFrequency = 'primary'
+RegisterNUICallback('switchFrequency', function(_, cb)
+    if radioState.active == 'primary' and radioState.secondary then
+        radioState.active = 'secondary'
+    elseif radioState.active == 'secondary' and radioState.primary then
+        radioState.active = 'primary'
     end
-    
+
+    applyActiveFallback()
+    syncFrequencyStateToNui()
+
     cb({
-        activeFreq = activeFrequency,
-        frequency = activeFrequency == 'primary' and currentFrequency or secondaryFrequency,
-        primaryChatRelay = chatRelayEnabled.primary,
-        secondaryChatRelay = chatRelayEnabled.secondary
+        activeFreq = radioState.active,
+        frequency = radioState.active == 'primary' and radioState.primary or radioState.secondary,
+        primaryChatRelay = radioState.chatRelay.primary,
+        secondaryChatRelay = radioState.chatRelay.secondary
     })
 end)
 
 RegisterNUICallback('toggleChatRelay', function(data, cb)
-    local requestedChannel = tostring((data and data.channel) or activeFrequency)
+    local requestedChannel = tostring((data and data.channel) or radioState.active)
     local channel = requestedChannel == 'secondary' and 'secondary' or 'primary'
-    local targetFrequency = channel == 'primary' and currentFrequency or secondaryFrequency
+    local targetFrequency = channel == 'primary' and radioState.primary or radioState.secondary
 
     if not targetFrequency then
-        chatRelayEnabled[channel] = false
-        SyncFrequencyStateToNui()
+        radioState.chatRelay[channel] = false
+        syncFrequencyStateToNui()
         cb({
             success = false,
             reason = 'no_frequency',
             channel = channel,
             enabled = false,
-            primaryChatRelay = chatRelayEnabled.primary,
-            secondaryChatRelay = chatRelayEnabled.secondary
+            primaryChatRelay = radioState.chatRelay.primary,
+            secondaryChatRelay = radioState.chatRelay.secondary
         })
         return
     end
 
     if not HasAccessToFrequency(targetFrequency) then
-        chatRelayEnabled[channel] = false
-        SyncFrequencyStateToNui()
+        radioState.chatRelay[channel] = false
+        syncFrequencyStateToNui()
         cb({
             success = false,
             reason = 'restricted',
             channel = channel,
             enabled = false,
-            primaryChatRelay = chatRelayEnabled.primary,
-            secondaryChatRelay = chatRelayEnabled.secondary
+            primaryChatRelay = radioState.chatRelay.primary,
+            secondaryChatRelay = radioState.chatRelay.secondary
         })
         return
     end
 
-    chatRelayEnabled[channel] = not chatRelayEnabled[channel]
-    SyncFrequencyStateToNui()
+    radioState.chatRelay[channel] = not radioState.chatRelay[channel]
+    syncFrequencyStateToNui()
 
     cb({
         success = true,
         channel = channel,
-        enabled = chatRelayEnabled[channel],
-        primaryChatRelay = chatRelayEnabled.primary,
-        secondaryChatRelay = chatRelayEnabled.secondary
+        enabled = radioState.chatRelay[channel],
+        primaryChatRelay = radioState.chatRelay.primary,
+        secondaryChatRelay = radioState.chatRelay.secondary
     })
 end)
 
 RegisterNetEvent('7_radio:client:receiveMessage', function(frequency, senderName, message, senderId)
-    local channel = GetChannelForFrequency(frequency)
+    local freqLabel = normalizeFrequencyLabel(frequency)
+    if not freqLabel then
+        return
+    end
+
+    local channel = getChannelForFrequency(freqLabel)
     if not channel then
         return
     end
 
-    
     SendNUIMessage({
         action = 'newMessage',
-        frequency = frequency,
+        frequency = freqLabel,
         sender = senderName,
         message = message,
         senderId = senderId,
         isMe = senderId == GetPlayerServerId(PlayerId())
     })
 
-    if chatRelayEnabled[channel] and HasAccessToFrequency(frequency) then
-        local freqLabel = NormalizeFrequencyLabel(frequency)
-        local cleanedMessage = StripGpsTokenFromMessage(message)
+    if radioState.chatRelay[channel] and HasAccessToFrequency(freqLabel) then
+        local cleanedMessage = stripGpsTokenFromMessage(message)
         local senderLabel = senderName or 'Unknown'
 
         TriggerEvent('chat:addMessage', {
             color = {0, 255, 163},
             multiline = true,
-            args = {string.format('[RADIO %s] %s', freqLabel, senderLabel), cleanedMessage}
+            args = {('[RADIO %s] %s'):format(freqLabel, senderLabel), cleanedMessage}
         })
-    elseif chatRelayEnabled[channel] and not HasAccessToFrequency(frequency) then
-        chatRelayEnabled[channel] = false
-        SyncFrequencyStateToNui()
+    elseif radioState.chatRelay[channel] and not HasAccessToFrequency(freqLabel) then
+        radioState.chatRelay[channel] = false
+        syncFrequencyStateToNui()
     end
 
-    
-    if Config and Config.UseSound then
-        PlaySound(-1, 'NAV_UP_DOWN', Config.RadioClickSound, 0, 0, 1)
+    if radioState.chatOpen then
+        return
     end
 
-    
-    if not chatOpen then
-        
-        lastRadioNotify = lastRadioNotify or {}
+    local now = GetGameTimer()
+    local last = lastRadioNotify[freqLabel] or 0
 
-        local freqKey = tostring(frequency)
-        local now = GetGameTimer()
-        local cooldown = radioNotifyCooldownMs or 5000            
-        local last = lastRadioNotify[freqKey] or 0
+    if now - last < radioNotifyCooldownMs then
+        return
+    end
 
-        if (now - last) >= cooldown then
-            
-            local channelLabel = "OTHER"
-            if frequency == currentFrequency then
-                channelLabel = "CHANNEL 1"
-            elseif frequency == secondaryFrequency then
-                channelLabel = "CHANNEL 2"
-            end
+    local channelLabel = 'OTHER'
+    if radioState.primary and radioState.primary == freqLabel then
+        channelLabel = 'CHANNEL 1'
+    elseif radioState.secondary and radioState.secondary == freqLabel then
+        channelLabel = 'CHANNEL 2'
+    end
 
-            
-            local notifText = string.format('New message on %s (%s)', freqKey, channelLabel)
-            if senderName and senderName ~= '' then
-                notifText = notifText .. ' — ' .. senderName
-            end
+    local notifText = ('New message on %s (%s)'):format(freqLabel, channelLabel)
+    if senderName and senderName ~= '' then
+        notifText = notifText .. ' - ' .. senderName
+    end
 
-            
-            local previewEnabled = (radioNotifyEnablePreview ~= nil) and radioNotifyEnablePreview or true
-            local previewLen = radioNotifyPreviewLength or 80
-            if previewEnabled and message and message ~= '' then
-                local preview = StripGpsTokenFromMessage(message)
-                if #preview > previewLen then
-                    preview = string.sub(preview, 1, previewLen) .. '...'
-                end
-                notifText = notifText .. '\n"' .. preview .. '"'
-            end
+    if radioNotifyEnablePreview and message and message ~= '' then
+        local preview = stripGpsTokenFromMessage(message)
+        if #preview > radioNotifyPreviewLength then
+            preview = preview:sub(1, radioNotifyPreviewLength) .. '...'
+        end
+        notifText = notifText .. '\n"' .. preview .. '"'
+    end
 
-            
-            if QBCore and QBCore.Functions and QBCore.Functions.Notify then
-                local ok = pcall(function()
-                    
-                    QBCore.Functions.Notify(notifText, 'primary', 5000)
-                end)
-                if not ok then
-                    
-                    QBCore.Functions.Notify(notifText, 'primary')
-                end
-            else
-                
-                TriggerEvent('chat:addMessage', {
-                    color = {255, 128, 0},
-                    multiline = true,
-                    args = {'[RADIO]', notifText}
-                })
-            end
-
-            
-            lastRadioNotify[freqKey] = now
+    local sent = false
+    if QBCore and QBCore.Functions and QBCore.Functions.Notify then
+        local ok = pcall(function()
+            QBCore.Functions.Notify(notifText, 'primary', 5000)
+        end)
+        sent = ok
+        if not ok then
+            QBCore.Functions.Notify(notifText, 'primary')
+            sent = true
         end
     end
+
+    if not sent then
+        TriggerEvent('chat:addMessage', {
+            color = {255, 128, 0},
+            multiline = true,
+            args = {'[RADIO]', notifText}
+        })
+    end
+
+    lastRadioNotify[freqLabel] = now
 end)
 
-
 RegisterNetEvent('7_radio:client:updateFrequencyCount', function(frequency, count)
-    
+    local freqLabel = normalizeFrequencyLabel(frequency)
+    if not freqLabel then
+        return
+    end
+
     SendNUIMessage({
         action = 'updateFreqCount',
-        frequency = tostring(frequency),
+        frequency = freqLabel,
         count = tonumber(count) or 0
     })
 end)
 
 RegisterNetEvent('7_radio:client:loadHistory', function(frequency, history, customData)
+    local freqLabel = normalizeFrequencyLabel(frequency)
+    if not freqLabel then
+        return
+    end
+
+    local normalizedHistory = {}
+
+    if type(history) == 'table' then
+        for _, item in ipairs(history) do
+            local entryFreq = normalizeFrequencyLabel(item.frequency) or freqLabel
+            normalizedHistory[#normalizedHistory + 1] = {
+                frequency = entryFreq,
+                sender = item.sender,
+                message = item.message,
+                timestamp = item.timestamp,
+                citizenid = item.citizenid,
+                senderId = item.senderId
+            }
+        end
+    end
+
     SendNUIMessage({
-        action = "loadHistory",
-        frequency = frequency,
-        history = history,
+        action = 'loadHistory',
+        frequency = freqLabel,
+        history = normalizedHistory,
         customData = customData
     })
 end)
 
 RegisterNUICallback('setWaypoint', function(data, cb)
     SetNewWaypoint(data.x, data.y)
-    QBCore.Functions.Notify('GPS mis à jour !', 'success')
+    QBCore.Functions.Notify('GPS updated', 'success')
     cb('ok')
 end)
-
 
 RegisterNUICallback('saveUserMacro', function(data, cb)
     TriggerServerEvent('7_radio:server:saveUserMacro', data.label, data.value, data.description)
@@ -676,11 +908,10 @@ RegisterNUICallback('deleteUserMacro', function(data, cb)
     cb('ok')
 end)
 
-RegisterNUICallback('fetchUserMacros', function(data, cb)
+RegisterNUICallback('fetchUserMacros', function(_, cb)
     TriggerServerEvent('7_radio:server:getUserMacros')
     cb('ok')
 end)
-
 
 RegisterNetEvent('7_radio:client:receiveUserMacros', function(macros)
     SendNUIMessage({
@@ -698,41 +929,78 @@ RegisterNetEvent('7_radio:client:onMacroSaved', function(id)
     TriggerServerEvent('7_radio:server:getUserMacros')
 end)
 
-local function GetCurrentLocationData()
-    local playerPed = PlayerPedId()
-    local coords = GetEntityCoords(playerPed)
+RegisterNetEvent('7_radio:client:onMacroDeleted', function(success, macroId)
+    SendNUIMessage({
+        action = 'macroDeleted',
+        success = success == true,
+        id = macroId
+    })
+
+    if success then
+        TriggerServerEvent('7_radio:server:getUserMacros')
+    end
+end)
+
+local function getStreetAndArea(coords)
     local s1, s2 = GetStreetNameAtCoord(coords.x, coords.y, coords.z)
     local streetName = GetStreetNameFromHashKey(s1)
-    local area = GetLabelText(GetNameOfZone(coords.x, coords.y, coords.z))
-    
+
     if s2 ~= 0 then
-        streetName = streetName .. " / " .. GetStreetNameFromHashKey(s2)
-    end
-    
-    local locationText = streetName
-    if area and area ~= '' and area ~= 'NULL' then
-        locationText = locationText .. ", " .. area
+        streetName = streetName .. ' / ' .. GetStreetNameFromHashKey(s2)
     end
 
-    return locationText, {
+    local area = GetLabelText(GetNameOfZone(coords.x, coords.y, coords.z))
+
+    if area and area ~= '' and area ~= 'NULL' then
+        return streetName .. ', ' .. area
+    end
+
+    return streetName
+end
+
+local function getCurrentLocationData()
+    local coords = GetEntityCoords(PlayerPedId())
+    local text = getStreetAndArea(coords)
+
+    return text, {
         x = coords.x,
         y = coords.y,
         z = coords.z
     }
 end
 
-local function GetInGameTime()
+local function getCurrentWaypointData()
+    local waypointBlip = GetFirstBlipInfoId(8)
+    if waypointBlip == 0 or not DoesBlipExist(waypointBlip) then
+        return 'No waypoint set', nil
+    end
+
+    local coords = GetBlipInfoIdCoord(waypointBlip)
+    if not coords then
+        return 'No waypoint set', nil
+    end
+
+    local text = getStreetAndArea(coords)
+
+    return text, {
+        x = coords.x,
+        y = coords.y,
+        z = coords.z
+    }
+end
+
+local function getInGameTime()
     local hours = GetClockHours()
     local minutes = GetClockMinutes()
-    return string.format("%02d:%02d", hours, minutes)
+    return string.format('%02d:%02d', hours, minutes)
 end
 
 CreateThread(function()
     while true do
-        if chatOpen or radioOpen then
-            local Player = QBCore.Functions.GetPlayerData()
-            local locationText, locationCoords = GetCurrentLocationData()
-            local timeText = GetInGameTime()
+        if radioState.chatOpen or radioState.radioOpen then
+            local locationText, locationCoords = getCurrentLocationData()
+            local waypointText, waypointCoords = getCurrentWaypointData()
+            local timeText = getInGameTime()
 
             local name = 'Unknown'
             local surname = 'Unknown'
@@ -740,20 +1008,20 @@ CreateThread(function()
             local rankLabel = 'None'
             local citizenid = nil
 
-            if Player and Player.charinfo then
-                name = Player.charinfo.firstname or name
-                surname = Player.charinfo.lastname or surname
+            if PlayerData and PlayerData.charinfo then
+                name = PlayerData.charinfo.firstname or name
+                surname = PlayerData.charinfo.lastname or surname
             end
 
-            if Player and Player.job then
-                jobLabel = Player.job.label or jobLabel
-                if Player.job.grade then
-                    rankLabel = Player.job.grade.name or Player.job.grade.label or rankLabel
+            if PlayerData and PlayerData.job then
+                jobLabel = PlayerData.job.label or jobLabel
+                if PlayerData.job.grade then
+                    rankLabel = PlayerData.job.grade.name or PlayerData.job.grade.label or rankLabel
                 end
             end
 
-            if Player then
-                citizenid = Player.citizenid
+            if PlayerData then
+                citizenid = PlayerData.citizenid
             end
 
             SendNUIMessage({
@@ -761,6 +1029,8 @@ CreateThread(function()
                 data = {
                     location = locationText,
                     locationCoords = locationCoords,
+                    waypoint = waypointText,
+                    waypointCoords = waypointCoords,
                     hour = timeText,
                     name = name,
                     surname = surname,
@@ -769,15 +1039,10 @@ CreateThread(function()
                     citizenid = citizenid
                 }
             })
+
             Wait(1000)
         else
             Wait(2000)
         end
     end
-end)
-RegisterNUICallback('setGpsAtCurrent', function(data, cb)
-    local coords = GetEntityCoords(PlayerPedId())
-    SetNewWaypoint(coords.x, coords.y)
-    QBCore.Functions.Notify('GPS marked at position', 'success')
-    cb('ok')
 end)

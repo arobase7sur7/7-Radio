@@ -1,31 +1,206 @@
 local QBCore = exports['qb-core']:GetCoreObject()
 
-
 local radioFrequencies = {}
 local frequencyHistory = {}
 
-local function NormalizeFrequency(frequency)
-    local freq = tonumber(frequency)
-    if freq then
-        return string.format("%.2f", freq)
+local function normalizeFrequency(value)
+    if value == nil then
+        return nil
     end
-    return tostring(frequency)
+
+    local raw = tostring(value):gsub(',', '.')
+    raw = raw:match('^%s*(.-)%s*$')
+
+    local num = tonumber(raw)
+    if not num then
+        return nil
+    end
+
+    return string.format('%.2f', num)
 end
 
-local function registerServerEventAliases(eventName, handler)
-    RegisterNetEvent(('7_radio:%s'):format(eventName), handler)
+local function getTableLength(tbl)
+    if type(tbl) ~= 'table' then
+        return 0
+    end
+
+    local count = 0
+    for _ in pairs(tbl) do
+        count = count + 1
+    end
+    return count
 end
 
+local function parseJobEntry(entry)
+    local raw = tostring(entry or '')
+    local jobName, condition = raw:match('^([^:]+):(.+)$')
+    if not jobName then
+        return raw, nil
+    end
+    return jobName, condition
+end
 
-registerServerEventAliases('server:joinFrequency', function(frequency, isPrimary)
+local function evaluateCondition(condition, grade)
+    if type(condition) ~= 'string' or condition == '' then
+        return nil
+    end
+
+    if condition:sub(1, 4) == 'from' then
+        local minGrade = tonumber(condition:sub(5))
+        if minGrade then
+            return grade >= minGrade
+        end
+    elseif condition:sub(1, 5) == 'fixed' then
+        local fixedGrade = tonumber(condition:sub(6))
+        if fixedGrade then
+            return grade == fixedGrade
+        end
+    end
+
+    return nil
+end
+
+local function getFrequencyConfig(frequency)
+    if type(Config.RestrictedFrequencies) ~= 'table' then
+        return nil
+    end
+
+    local freqKey = normalizeFrequency(frequency)
+    if not freqKey then
+        return nil
+    end
+
+    local freqNum = tonumber(freqKey) or 0
+
+    for _, restriction in ipairs(Config.RestrictedFrequencies) do
+        if restriction.freq then
+            local target = normalizeFrequency(restriction.freq)
+            if target and target == freqKey then
+                return restriction
+            end
+        elseif restriction.min and restriction.max and freqNum >= restriction.min and freqNum <= restriction.max then
+            return restriction
+        end
+    end
+
+    return nil
+end
+
+function HasAccessToFrequency(source, frequency)
+    local Player = QBCore.Functions.GetPlayer(source)
+    if not Player or not Player.PlayerData then
+        return false
+    end
+
+    if type(Config.RestrictedFrequencies) ~= 'table' then
+        return true
+    end
+
+    local restriction = getFrequencyConfig(frequency)
+    if not restriction then
+        return true
+    end
+
+    local allowedJobs = restriction.jobs
+    if type(allowedJobs) ~= 'table' or #allowedJobs == 0 then
+        return true
+    end
+
+    local playerJob = (Player.PlayerData.job and Player.PlayerData.job.name) or 'unknown'
+    local playerGrade = (Player.PlayerData.job and Player.PlayerData.job.grade and Player.PlayerData.job.grade.level) or 0
+
+    local jobMatch = false
+    local conditionedMatch = nil
+
+    for _, entry in ipairs(allowedJobs) do
+        local jobName, condition = parseJobEntry(entry)
+        if playerJob == jobName then
+            jobMatch = true
+            conditionedMatch = evaluateCondition(condition, playerGrade)
+            break
+        end
+    end
+
+    if not jobMatch then
+        return false
+    end
+
+    if conditionedMatch ~= nil then
+        return conditionedMatch
+    end
+
+    if restriction.fixedGrade then
+        return playerGrade == restriction.fixedGrade
+    end
+
+    if restriction.minGrade then
+        return playerGrade >= restriction.minGrade
+    end
+
+    return true
+end
+
+local function getPlayerRadioLabel(Player, source)
+    local charInfo = Player.PlayerData and Player.PlayerData.charinfo
+    if charInfo and charInfo.firstname and charInfo.lastname then
+        return ('%s %s'):format(charInfo.firstname, charInfo.lastname)
+    end
+    return ('Player#%s'):format(source)
+end
+
+local function updateFrequencyCount(frequency)
+    local count = getTableLength(radioFrequencies[frequency])
+    TriggerClientEvent('7_radio:client:updateFrequencyCount', -1, frequency, count)
+end
+
+local function removePlayerFromFrequency(source, frequency)
+    local players = radioFrequencies[frequency]
+    if not players or not players[source] then
+        return false
+    end
+
+    players[source] = nil
+
+    if next(players) == nil then
+        radioFrequencies[frequency] = nil
+        frequencyHistory[frequency] = nil
+    end
+
+    updateFrequencyCount(frequency)
+    return true
+end
+
+local function removePlayerFromAllFrequencies(source)
+    local removedAny = false
+    for frequency, players in pairs(radioFrequencies) do
+        if players[source] then
+            players[source] = nil
+            if next(players) == nil then
+                radioFrequencies[frequency] = nil
+                frequencyHistory[frequency] = nil
+            end
+            updateFrequencyCount(frequency)
+            removedAny = true
+        end
+    end
+    return removedAny
+end
+
+RegisterNetEvent('7_radio:server:joinFrequency', function(frequency)
     local src = source
     local Player = QBCore.Functions.GetPlayer(src)
-    if not Player then return end
+    if not Player then
+        return
+    end
 
-    local freqKey = NormalizeFrequency(frequency)
+    local freqKey = normalizeFrequency(frequency)
+    if not freqKey then
+        TriggerClientEvent('QBCore:Notify', src, 'Invalid frequency', 'error')
+        return
+    end
 
     if not HasAccessToFrequency(src, freqKey) then
-        TriggerClientEvent('QBCore:Notify', src, 'Vous n\'avez pas accès à cette fréquence', 'error')
+        TriggerClientEvent('QBCore:Notify', src, 'You do not have access to this frequency', 'error')
         return
     end
 
@@ -34,16 +209,14 @@ registerServerEventAliases('server:joinFrequency', function(frequency, isPrimary
     end
 
     radioFrequencies[freqKey][src] = {
-        name = (Player.PlayerData and Player.PlayerData.charinfo and (Player.PlayerData.charinfo.firstname .. ' ' .. Player.PlayerData.charinfo.lastname)) or ("Player#" .. src),
-        job = (Player.PlayerData and Player.PlayerData.job and Player.PlayerData.job.name) or "unknown",
+        name = getPlayerRadioLabel(Player, src),
+        job = (Player.PlayerData and Player.PlayerData.job and Player.PlayerData.job.name) or 'unknown',
         citizenid = (Player.PlayerData and Player.PlayerData.citizenid) or nil
     }
 
-local count = GetTableLength(radioFrequencies[freqKey] or {})
-TriggerClientEvent('7_radio:client:updateFrequencyCount', -1, freqKey, count)
+    updateFrequencyCount(freqKey)
 
-
-    local freqConfig = GetFrequencyConfig(freqKey)
+    local freqConfig = getFrequencyConfig(freqKey)
     local customData = {
         label = freqConfig and freqConfig.label or nil,
         color = freqConfig and freqConfig.color or nil,
@@ -51,290 +224,179 @@ TriggerClientEvent('7_radio:client:updateFrequencyCount', -1, freqKey, count)
     }
 
     if frequencyHistory[freqKey] then
-
         TriggerClientEvent('7_radio:client:loadHistory', src, freqKey, frequencyHistory[freqKey], customData)
-    else
+        return
+    end
 
-        if exports and exports.oxmysql then
-            local limit = Config.ChatHistoryLimit or 100
-            exports.oxmysql:execute('SELECT sender, message, timestamp, citizenid FROM radio_history WHERE frequency = ? ORDER BY id DESC LIMIT ?', {
-                freqKey, limit
-            }, function(results)
-                local history = {}
-                if results and #results > 0 then
-
-                    for i = #results, 1, -1 do
-                        table.insert(history, {
-                            frequency = freqKey,
-                            sender = results[i].sender,
-                            message = results[i].message,
-                            timestamp = results[i].timestamp,
-                            citizenid = results[i].citizenid
-                        })
-                    end
+    if exports and exports.oxmysql then
+        local limit = Config.ChatHistoryLimit or 100
+        exports.oxmysql:execute('SELECT sender, message, timestamp, citizenid FROM radio_history WHERE frequency = ? ORDER BY id DESC LIMIT ?', {
+            freqKey,
+            limit
+        }, function(results)
+            local history = {}
+            if results and #results > 0 then
+                for i = #results, 1, -1 do
+                    local row = results[i]
+                    history[#history + 1] = {
+                        frequency = freqKey,
+                        sender = row.sender,
+                        message = row.message,
+                        timestamp = row.timestamp,
+                        citizenid = row.citizenid
+                    }
                 end
-                frequencyHistory[freqKey] = history
-                TriggerClientEvent('7_radio:client:loadHistory', src, freqKey, history, customData)
-            end)
-        else
-            TriggerClientEvent('7_radio:client:loadHistory', src, freqKey, {}, customData)
-        end
+            end
+
+            frequencyHistory[freqKey] = history
+            TriggerClientEvent('7_radio:client:loadHistory', src, freqKey, history, customData)
+        end)
+        return
     end
+
+    TriggerClientEvent('7_radio:client:loadHistory', src, freqKey, {}, customData)
 end)
 
 
-registerServerEventAliases('server:leaveFrequency', function(frequency)
-    local src = source
-    local freqKey = NormalizeFrequency(frequency)
-
-    if radioFrequencies[freqKey] and radioFrequencies[freqKey][src] then
-        local playerName = radioFrequencies[freqKey][src].name
-        radioFrequencies[freqKey][src] = nil
-
-        if next(radioFrequencies[freqKey]) == nil then
-            radioFrequencies[freqKey] = nil
-
-            frequencyHistory[freqKey] = nil
-        end
-
-        local count = radioFrequencies[freqKey] and GetTableLength(radioFrequencies[freqKey]) or 0
-TriggerClientEvent('7_radio:client:updateFrequencyCount', -1, freqKey, count)
-
-
+RegisterNetEvent('7_radio:server:leaveFrequency', function(frequency)
+    local freqKey = normalizeFrequency(frequency)
+    if not freqKey then
+        return
     end
+
+    removePlayerFromFrequency(source, freqKey)
 end)
 
+RegisterNetEvent('7_radio:server:resetPlayerFrequencies', function()
+    removePlayerFromAllFrequencies(source)
+end)
 
-registerServerEventAliases('server:sendMessage', function(frequency, message)
+RegisterNetEvent('7_radio:server:sendMessage', function(frequency, message)
     local src = source
     local Player = QBCore.Functions.GetPlayer(src)
-    if not Player then return end
+    if not Player then
+        return
+    end
 
-    local freqKey = NormalizeFrequency(frequency)
+    local freqKey = normalizeFrequency(frequency)
+    if not freqKey then
+        TriggerClientEvent('QBCore:Notify', src, 'Invalid frequency', 'error')
+        return
+    end
 
-
-    if not radioFrequencies[freqKey] or not radioFrequencies[freqKey][src] then
+    local players = radioFrequencies[freqKey]
+    if not players or not players[src] then
         TriggerClientEvent('QBCore:Notify', src, 'You are not on this frequency', 'error')
         return
     end
 
     if not HasAccessToFrequency(src, freqKey) then
+        players[src] = nil
         TriggerClientEvent('QBCore:Notify', src, 'You no longer have access to this frequency', 'error')
-        if radioFrequencies[freqKey] then radioFrequencies[freqKey][src] = nil end
+        updateFrequencyCount(freqKey)
         return
     end
 
-    local senderName = radioFrequencies[freqKey][src].name
+    local senderName = players[src].name
     local displaySender = senderName
 
-
-    local freqConfig = GetFrequencyConfig(freqKey)
+    local freqConfig = getFrequencyConfig(freqKey)
     if freqConfig then
-        local prefix = ""
+        local prefix = ''
         if freqConfig.showJob and Player.PlayerData.job then
-            prefix = Player.PlayerData.job.label or Player.PlayerData.job.name
-        end
-        if freqConfig.showJobRank and Player.PlayerData.job and Player.PlayerData.job.grade then
-            if prefix ~= "" then prefix = prefix .. " - " end
-            prefix = prefix .. (Player.PlayerData.job.grade.name or Player.PlayerData.job.grade.label)
+            prefix = Player.PlayerData.job.label or Player.PlayerData.job.name or ''
         end
 
-        if prefix ~= "" then
-            displaySender = "[" .. prefix .. "] " .. senderName
+        if freqConfig.showJobRank and Player.PlayerData.job and Player.PlayerData.job.grade then
+            if prefix ~= '' then
+                prefix = prefix .. ' - '
+            end
+            prefix = prefix .. (Player.PlayerData.job.grade.name or Player.PlayerData.job.grade.label or '')
+        end
+
+        if prefix ~= '' then
+            displaySender = ('[%s] %s'):format(prefix, senderName)
         end
     end
 
+    local toRemove = {}
 
-    for playerId, playerData in pairs(radioFrequencies[freqKey]) do
-        if GetPlayerPing(playerId) and GetPlayerPing(playerId) > 0 then
+    for playerId in pairs(players) do
+        local ping = GetPlayerPing(playerId)
+        if ping and ping > 0 then
             if HasAccessToFrequency(playerId, freqKey) then
                 TriggerClientEvent('7_radio:client:receiveMessage', playerId, freqKey, displaySender, message, src)
             else
-                radioFrequencies[freqKey][playerId] = nil
+                toRemove[#toRemove + 1] = playerId
                 TriggerClientEvent('QBCore:Notify', playerId, 'You no longer have access to this frequency', 'error')
             end
         else
-          
-            radioFrequencies[freqKey][playerId] = nil
+            toRemove[#toRemove + 1] = playerId
         end
     end
 
-    print(string.format('[7_RADIO] [%s] %s: %s', freqKey, senderName, message))
+    for _, playerId in ipairs(toRemove) do
+        players[playerId] = nil
+    end
 
+    if #toRemove > 0 then
+        if next(players) == nil then
+            radioFrequencies[freqKey] = nil
+            frequencyHistory[freqKey] = nil
+        end
+        updateFrequencyCount(freqKey)
+    end
 
-    if not frequencyHistory[freqKey] then frequencyHistory[freqKey] = {} end
-    table.insert(frequencyHistory[freqKey], {
+    local timestamp = os.time() * 1000
+
+    if not frequencyHistory[freqKey] then
+        frequencyHistory[freqKey] = {}
+    end
+
+    local history = frequencyHistory[freqKey]
+    history[#history + 1] = {
         frequency = freqKey,
         sender = displaySender,
         citizenid = Player.PlayerData.citizenid,
         message = message,
-        timestamp = os.time() * 1000,
+        timestamp = timestamp,
         senderId = src
-    })
-    
+    }
 
     local limit = Config.ChatHistoryLimit or 100
-    if #frequencyHistory[freqKey] > limit then
-        table.remove(frequencyHistory[freqKey], 1)
+    if #history > limit then
+        table.remove(history, 1)
     end
 
     if exports and exports.oxmysql then
         exports.oxmysql:insert('INSERT INTO radio_history (frequency, sender, citizenid, message, timestamp) VALUES (?, ?, ?, ?, ?)', {
-            freqKey, displaySender, Player.PlayerData.citizenid, message, os.time() * 1000
-        }, function(id)
-            if not id then
-                print('[7_RADIO] Warning: error when adding to DB')
-            end
-        end)
+            freqKey,
+            displaySender,
+            Player.PlayerData.citizenid,
+            message,
+            timestamp
+        }, function() end)
     end
 end)
 
-
-function GetFrequencyConfig(frequency)
-    local freq = tonumber(frequency) or 0
-    if not Config.RestrictedFrequencies then return nil end
-
-    for _, restriction in ipairs(Config.RestrictedFrequencies) do
-        local freqStr = NormalizeFrequency(frequency)
-
-        if restriction.freq then
-            if tostring(restriction.freq) == freqStr then
-                return restriction
-            end
-        elseif restriction.min and restriction.max then
-            local freqNum = tonumber(frequency) or 0
-            if freqNum >= restriction.min and freqNum <= restriction.max then
-                return restriction
-            end
-        end
-    end
-    return nil
-end
-
-
-function HasAccessToFrequency(source, frequency)
-    local Player = QBCore.Functions.GetPlayer(source)
-    if not Player or not Player.PlayerData then return false end
-
-    local freqStr = NormalizeFrequency(frequency)
-
-    if not Config.RestrictedFrequencies then return true end
-
-    for _, restriction in ipairs(Config.RestrictedFrequencies) do
-        local isMatch = false
-
-        if restriction.freq then
-            if tostring(restriction.freq) == freqStr then
-                isMatch = true
-            end
-        elseif restriction.min and restriction.max then
-            local freqNum = tonumber(frequency) or 0
-            if freqNum >= restriction.min and freqNum <= restriction.max then
-                isMatch = true
-            end
-        end
-
-        if isMatch then
-            local jobMatch = false
-            local specificGradeMatch = nil
-
-            local playerJob = (Player.PlayerData.job and Player.PlayerData.job.name) or "unknown"
-            local playerGrade = (Player.PlayerData.job and Player.PlayerData.job.grade and Player.PlayerData.job.grade.level) or 0
-
-            for _, allowedJobEntry in ipairs(restriction.jobs) do
-                local jobName = allowedJobEntry
-                local condition = nil
-
-                if string.find(allowedJobEntry, ":") then
-                    local parts = {}
-                    for s in string.gmatch(allowedJobEntry, "([^:]+)") do
-                        table.insert(parts, s)
-                    end
-                    jobName = parts[1]
-                    condition = parts[2]
-                end
-
-                if playerJob == jobName then
-                    jobMatch = true
-                    if condition then
-                        if string.sub(condition, 1, 4) == "from" then
-                            local minG = tonumber(string.sub(condition, 5))
-                            if minG then
-                                specificGradeMatch = (playerGrade >= minG)
-                            end
-                        elseif string.sub(condition, 1, 5) == "fixed" then
-                            local fixG = tonumber(string.sub(condition, 6))
-                            if fixG then
-                                specificGradeMatch = (playerGrade == fixG)
-                            end
-                        end
-                    end
-                    break
-                end
-            end
-
-            if jobMatch then
-
-                if specificGradeMatch ~= nil then
-                    return specificGradeMatch
-                end
-
-
-                if restriction.fixedGrade then
-                    return playerGrade == restriction.fixedGrade
-                elseif restriction.minGrade then
-                    return playerGrade >= restriction.minGrade
-                end
-                
-                return true
-            end
-            return false
-        end
-    end
-
-    return true
-end
-
-
-AddEventHandler('playerDropped', function(reason)
-    local src = source
-    if not src then return end
-
-    for frequency, players in pairs(radioFrequencies) do
-        if players[src] then
-            players[src] = nil
-            if next(radioFrequencies[frequency]) == nil then
-                radioFrequencies[frequency] = nil
-
-                frequencyHistory[frequency] = nil
-            end
-            
-            local count = radioFrequencies[frequency] and GetTableLength(radioFrequencies[frequency]) or 0
-            TriggerClientEvent('7_radio:client:updateFrequencyCount', -1, frequency, count)
-        end
-    end
+AddEventHandler('playerDropped', function()
+    removePlayerFromAllFrequencies(source)
 end)
 
 QBCore.Commands.Add('radiolist', 'View list of active frequencies (admin)', {}, false, function(source)
     local Player = QBCore.Functions.GetPlayer(source)
 
-   
     local hasAce = false
-
     if IsPlayerAceAllowed then
         local ok, res = pcall(function()
-            return IsPlayerAceAllowed(source, "admin")
+            return IsPlayerAceAllowed(source, 'admin')
         end)
         if ok and res then
             hasAce = true
         end
     end
 
- 
-    local hasJobAdmin = false
-    if Player and Player.PlayerData and Player.PlayerData.job and Player.PlayerData.job.name == 'admin' then
-        hasJobAdmin = true
-    end
+    local hasJobAdmin = Player and Player.PlayerData and Player.PlayerData.job and Player.PlayerData.job.name == 'admin'
 
     if not hasAce and not hasJobAdmin then
         TriggerClientEvent('QBCore:Notify', source, 'You do not have permission', 'error')
@@ -344,17 +406,13 @@ QBCore.Commands.Add('radiolist', 'View list of active frequencies (admin)', {}, 
     local total = 0
     for frequency, players in pairs(radioFrequencies) do
         total = total + 1
-        local num = GetTableLength(players)
-     
-        local freqLabel = tostring(frequency)
-        if tonumber(frequency) then
-            freqLabel = string.format("%.2f", tonumber(frequency))
-        end
-
         TriggerClientEvent('chat:addMessage', source, {
             color = {0, 255, 0},
             multiline = true,
-            args = {'[RADIO]', 'Frequency ' .. freqLabel .. ' : ' .. num .. ' connected'}
+            args = {
+                '[RADIO]',
+                ('Frequency %s : %s connected'):format(frequency, getTableLength(players))
+            }
         })
     end
 
@@ -363,61 +421,86 @@ QBCore.Commands.Add('radiolist', 'View list of active frequencies (admin)', {}, 
     end
 end, 'admin')
 
-
-function GetTableLength(t)
-    local count = 0
-    if not t then return 0 end
-    for _ in pairs(t) do
-        count = count + 1
-    end
-    return count
-end
-
-
-RegisterNetEvent('7_radio:server:saveUserMacro', function(label, value, desc)
+RegisterNetEvent('7_radio:server:saveUserMacro', function(label, value, description)
     local src = source
     local Player = QBCore.Functions.GetPlayer(src)
-    if not Player then return end
-    
+    if not Player then
+        return
+    end
+
+    if not exports or not exports.oxmysql then
+        return
+    end
+
+    local macroLabel = tostring(label or ''):match('^%s*(.-)%s*$')
+    local macroValue = tostring(value or ''):match('^%s*(.-)%s*$')
+    local macroDescription = tostring(description or ''):match('^%s*(.-)%s*$')
+
+    if macroLabel == '' or macroValue == '' then
+        return
+    end
+
     local identifier = Player.PlayerData.license
 
-    if exports and exports.oxmysql then
-        exports.oxmysql:insert('INSERT INTO radio_macros (identifier, label, value, description) VALUES (?, ?, ?, ?)', {
-            identifier, label, value, desc
-        }, function(id)
-            if id then
-                TriggerClientEvent('7_radio:client:onMacroSaved', src, id)
-            end
-        end)
-    end
+    exports.oxmysql:insert('INSERT INTO radio_macros (identifier, label, value, description) VALUES (?, ?, ?, ?)', {
+        identifier,
+        macroLabel,
+        macroValue,
+        macroDescription ~= '' and macroDescription or nil
+    }, function(id)
+        if id then
+            TriggerClientEvent('7_radio:client:onMacroSaved', src, id)
+        end
+    end)
 end)
 
 RegisterNetEvent('7_radio:server:deleteUserMacro', function(macroId)
     local src = source
     local Player = QBCore.Functions.GetPlayer(src)
-    if not Player then return end
-    
+    if not Player then
+        return
+    end
+
+    local id = tonumber(macroId)
+    if not id then
+        TriggerClientEvent('7_radio:client:onMacroDeleted', src, false, macroId)
+        return
+    end
+
+    if not exports or not exports.oxmysql then
+        TriggerClientEvent('7_radio:client:onMacroDeleted', src, false, id)
+        return
+    end
+
     local identifier = Player.PlayerData.license
 
-    if exports and exports.oxmysql then
-        exports.oxmysql:execute('DELETE FROM radio_macros WHERE id = ? AND identifier = ?', {
-            macroId, identifier
-        })
-    end
+    exports.oxmysql:execute('DELETE FROM radio_macros WHERE id = ? AND identifier = ?', {
+        id,
+        identifier
+    }, function(affectedRows)
+        local affected = tonumber(affectedRows) or tonumber(affectedRows and affectedRows.affectedRows) or 0
+        local success = affected > 0
+        TriggerClientEvent('7_radio:client:onMacroDeleted', src, success, id)
+    end)
 end)
 
 RegisterNetEvent('7_radio:server:getUserMacros', function()
     local src = source
     local Player = QBCore.Functions.GetPlayer(src)
-    if not Player then return end
-    
+    if not Player then
+        return
+    end
+
+    if not exports or not exports.oxmysql then
+        TriggerClientEvent('7_radio:client:receiveUserMacros', src, {})
+        return
+    end
+
     local identifier = Player.PlayerData.license
 
-    if exports and exports.oxmysql then
-        exports.oxmysql:execute('SELECT id, label, value, description FROM radio_macros WHERE identifier = ?', {
-            identifier
-        }, function(results)
-            TriggerClientEvent('7_radio:client:receiveUserMacros', src, results)
-        end)
-    end
+    exports.oxmysql:execute('SELECT id, label, value, description FROM radio_macros WHERE identifier = ? ORDER BY id DESC', {
+        identifier
+    }, function(results)
+        TriggerClientEvent('7_radio:client:receiveUserMacros', src, results or {})
+    end)
 end)
