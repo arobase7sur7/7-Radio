@@ -17,7 +17,7 @@ local radioState = {
 
 local radioNotifyCooldownMs = 5000
 local radioNotifyPreviewLength = 80
-local radioNotifyEnablePreview = true
+local radioNotifyEnablePreview = false
 local lastRadioNotify = {}
 
 local statePersistencePrefix = '7_radio:state:'
