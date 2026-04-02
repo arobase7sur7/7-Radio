@@ -5,7 +5,7 @@ Config = {}
 -- Players can rebind them at any time via: Pause Menu > Settings > Key Bindings > FiveM
 -- Changing these values WILL NOT override a player's personal binding once they have set it.
 Config.OpenRadioKey      = 'F9'   -- Default key to open / close the radio interface
-Config.OpenChatKey       = 'F10'  -- Default key to open / close the radio chat
+Config.OpenChatKey       = 'F11'  -- Default key to open / close the radio chat
 Config.SwitchFrequencyKey = 'TAB' -- Default key to switch between primary / secondary channel in radio chat
 
 Config.RadioItem = 'radio' -- Name of the item needed to open the radio / put "none" or false to disable item needed
