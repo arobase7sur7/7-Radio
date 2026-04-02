@@ -21,11 +21,305 @@ local radioNotifyEnablePreview = true
 local lastRadioNotify = {}
 
 local statePersistencePrefix = '7_radio:state:'
-local persistenceVersion = 1
+local persistenceVersion = 2
 local hasRestoredState = false
 local restoreInProgress = false
+local normalizeFrequencyLabel
+local uiThemePresets = {
+    ['default'] = true,
+    ['midnight'] = true,
+    ['amber'] = true,
+    ['ice'] = true
+}
+local chatRelayConfig = type(Config.ChatRelay) == 'table' and Config.ChatRelay or {}
 
-local function normalizeFrequencyLabel(value)
+local function normalizeChatRelayProvider(value)
+    local provider = tostring(value or 'auto'):lower()
+    if provider == 'chat' or provider == 'poodlechat' then
+        return provider
+    end
+    return 'auto'
+end
+
+local function getChatRelayProvider()
+    return normalizeChatRelayProvider(chatRelayConfig.provider)
+end
+
+local function getChatRelayTargetChannel()
+    local channel = tostring(chatRelayConfig.targetChannel or ''):match('^%s*(.-)%s*$')
+    if channel == '' then
+        return 'local'
+    end
+    return channel:lower()
+end
+
+local function shouldFallbackToDefaultChat()
+    if chatRelayConfig.fallbackToDefault == nil then
+        return true
+    end
+    return chatRelayConfig.fallbackToDefault == true
+end
+
+local function getPoodleChatResourceName()
+    local resourceName = tostring(chatRelayConfig.poodleChatResource or 'poodlechat'):match('^%s*(.-)%s*$')
+    if resourceName == '' then
+        return 'poodlechat'
+    end
+    return resourceName
+end
+
+local function isResourceRunning(resourceName)
+    if type(GetResourceState) ~= 'function' then
+        return false
+    end
+
+    local state = GetResourceState(resourceName)
+    return state == 'started' or state == 'starting'
+end
+
+local function sendDefaultRelayMessage(header, messageText)
+    TriggerEvent('chat:addMessage', {
+        color = {0, 255, 163},
+        multiline = true,
+        args = {header, messageText}
+    })
+end
+
+local function sendPoodleRelayMessage(header, messageText)
+    local resourceName = getPoodleChatResourceName()
+    if not isResourceRunning(resourceName) then
+        return false
+    end
+
+    local payload = {
+        channel = getChatRelayTargetChannel(),
+        color = {0, 255, 163},
+        multiline = true,
+        args = {header, messageText}
+    }
+
+    local ok, didSend = pcall(function()
+        return exports[resourceName]:AddChannelMessage(payload)
+    end)
+
+    return ok and didSend == true
+end
+
+local function relayMessageToConfiguredChat(header, messageText)
+    local provider = getChatRelayProvider()
+    local shouldTryPoodle = provider == 'auto' or provider == 'poodlechat'
+
+    if shouldTryPoodle and sendPoodleRelayMessage(header, messageText) then
+        return
+    end
+
+    if provider == 'poodlechat' and not shouldFallbackToDefaultChat() then
+        return
+    end
+
+    sendDefaultRelayMessage(header, messageText)
+end
+
+local function deepCopy(source)
+    if type(source) ~= 'table' then
+        return source
+    end
+
+    local result = {}
+    for key, value in pairs(source) do
+        result[key] = deepCopy(value)
+    end
+    return result
+end
+
+local function clampNumber(value, minValue, maxValue, fallback)
+    local num = tonumber(value)
+    if not num then
+        return fallback
+    end
+    if num < minValue then
+        return minValue
+    end
+    if num > maxValue then
+        return maxValue
+    end
+    return num
+end
+
+local function sanitizeColor(value, fallback)
+    local raw = tostring(value or ''):lower()
+    if raw:match('^#%x%x%x%x%x%x$') then
+        return raw
+    end
+    return fallback
+end
+
+local function sanitizeThemePreset(value, fallback)
+    local preset = tostring(value or ''):lower()
+    if uiThemePresets[preset] then
+        return preset
+    end
+    return fallback
+end
+
+local function getDefaultUiState()
+    return {
+        autoScroll = true,
+        textScale = {
+            radio = 1.0,
+            chat = 1.0,
+            macro = 1.0
+        },
+        interfaceScale = {
+            radio = 1.0,
+            chat = 1.0,
+            macro = 1.0
+        },
+        positions = {
+            radio = { x = 0.5, y = 0.5 },
+            chat = { x = 0.84, y = 0.8 },
+            macro = { x = 0.5, y = 0.5 }
+        },
+        theme = {
+            preset = 'default',
+            accent = '#00ffa3'
+        }
+    }
+end
+
+local function getDefaultThemeOverrides()
+    return {
+        exact = {},
+        ranges = {}
+    }
+end
+
+local uiState = getDefaultUiState()
+local themeOverrides = getDefaultThemeOverrides()
+
+local function sanitizeUiState(raw, fallback)
+    local base = deepCopy(type(fallback) == 'table' and fallback or getDefaultUiState())
+    if type(base.textScale) ~= 'table' then
+        local legacyScale = clampNumber(base.textScale, 0.85, 1.35, 1.0)
+        base.textScale = {
+            radio = legacyScale,
+            chat = legacyScale,
+            macro = legacyScale
+        }
+    end
+
+    if type(raw) ~= 'table' then
+        return base
+    end
+
+    if raw.autoScroll ~= nil then
+        base.autoScroll = raw.autoScroll == true
+    end
+
+    if raw.textScale ~= nil then
+        if type(raw.textScale) == 'table' then
+            if raw.textScale.radio ~= nil then
+                base.textScale.radio = clampNumber(raw.textScale.radio, 0.85, 1.35, base.textScale.radio)
+            end
+            if raw.textScale.chat ~= nil then
+                base.textScale.chat = clampNumber(raw.textScale.chat, 0.85, 1.35, base.textScale.chat)
+            end
+            if raw.textScale.macro ~= nil then
+                base.textScale.macro = clampNumber(raw.textScale.macro, 0.85, 1.35, base.textScale.macro)
+            end
+        else
+            local unifiedScale = clampNumber(raw.textScale, 0.85, 1.35, base.textScale.chat)
+            base.textScale.radio = unifiedScale
+            base.textScale.chat = unifiedScale
+            base.textScale.macro = unifiedScale
+        end
+    end
+
+    if type(raw.interfaceScale) == 'table' then
+        if raw.interfaceScale.radio ~= nil then
+            base.interfaceScale.radio = clampNumber(raw.interfaceScale.radio, 0.8, 1.35, base.interfaceScale.radio)
+        end
+        if raw.interfaceScale.chat ~= nil then
+            base.interfaceScale.chat = clampNumber(raw.interfaceScale.chat, 0.8, 1.35, base.interfaceScale.chat)
+        end
+        if raw.interfaceScale.macro ~= nil then
+            base.interfaceScale.macro = clampNumber(raw.interfaceScale.macro, 0.8, 1.35, base.interfaceScale.macro)
+        end
+    end
+
+    if type(raw.positions) == 'table' then
+        for _, key in ipairs({ 'radio', 'chat', 'macro' }) do
+            local input = raw.positions[key]
+            if type(input) == 'table' then
+                local x = clampNumber(input.x, 0.0, 1.0, base.positions[key].x)
+                local y = clampNumber(input.y, 0.0, 1.0, base.positions[key].y)
+                base.positions[key] = { x = x, y = y }
+            end
+        end
+    end
+
+    if type(raw.theme) == 'table' then
+        base.theme.preset = sanitizeThemePreset(raw.theme.preset, base.theme.preset)
+        base.theme.accent = sanitizeColor(raw.theme.accent, base.theme.accent)
+    end
+
+    return base
+end
+
+local function normalizeOverrideTheme(raw)
+    local defaults = getDefaultUiState().theme
+    local input = type(raw) == 'table' and raw or {}
+    return {
+        preset = sanitizeThemePreset(input.preset, defaults.preset),
+        accent = sanitizeColor(input.accent, defaults.accent)
+    }
+end
+
+local function sanitizeThemeOverrides(raw)
+    local clean = getDefaultThemeOverrides()
+    if type(raw) ~= 'table' then
+        return clean
+    end
+
+    if type(raw.exact) == 'table' then
+        for frequency, theme in pairs(raw.exact) do
+            local freqLabel = normalizeFrequencyLabel(frequency)
+            if freqLabel then
+                local num = tonumber(freqLabel)
+                if num and num >= (Config.MinFrequency or 1.0) and num <= (Config.MaxFrequency or 999.99) then
+                    clean.exact[freqLabel] = normalizeOverrideTheme(theme)
+                end
+            end
+        end
+    end
+
+    if type(raw.ranges) == 'table' then
+        for _, entry in ipairs(raw.ranges) do
+            if type(entry) == 'table' then
+                local minLabel = normalizeFrequencyLabel(entry.min)
+                local maxLabel = normalizeFrequencyLabel(entry.max)
+                local minNum = minLabel and tonumber(minLabel) or nil
+                local maxNum = maxLabel and tonumber(maxLabel) or nil
+
+                if minNum and maxNum and minNum <= maxNum then
+                    if minNum >= (Config.MinFrequency or 1.0) and maxNum <= (Config.MaxFrequency or 999.99) then
+                        local theme = normalizeOverrideTheme(entry)
+                        clean.ranges[#clean.ranges + 1] = {
+                            min = minLabel,
+                            max = maxLabel,
+                            preset = theme.preset,
+                            accent = theme.accent
+                        }
+                    end
+                end
+            end
+        end
+    end
+
+    return clean
+end
+
+normalizeFrequencyLabel = function(value)
     if value == nil then
         return nil
     end
@@ -233,13 +527,30 @@ local function persistRadioState()
         relay = {
             primary = radioState.chatRelay.primary,
             secondary = radioState.chatRelay.secondary
-        }
+        },
+        ui = uiState,
+        themeOverrides = themeOverrides
     }
 
     SetResourceKvp(key, json.encode(payload))
 end
 
-local function syncFrequencyStateToNui()
+local function syncUiSettingsToNui()
+    SendNUIMessage({
+        action = 'syncUiSettings',
+        ui = uiState,
+        themeOverrides = themeOverrides
+    })
+end
+
+local function syncThemeOverrideStateToNui()
+    SendNUIMessage({
+        action = 'themeOverrideState',
+        themeOverrides = themeOverrides
+    })
+end
+
+local function syncFrequencyStateToNui(skipPersist)
     SendNUIMessage({
         action = 'syncFrequencies',
         primary = radioState.primary,
@@ -249,7 +560,18 @@ local function syncFrequencyStateToNui()
         secondaryChatRelay = radioState.chatRelay.secondary
     })
 
-    persistRadioState()
+    if not skipPersist then
+        persistRadioState()
+    end
+end
+
+local function notifyUiDefaultsApplied(cleared)
+    SendNUIMessage({
+        action = 'uiDefaultsApplied',
+        cleared = cleared == true,
+        ui = uiState,
+        themeOverrides = themeOverrides
+    })
 end
 
 local function buildMacroSetsPayload()
@@ -326,6 +648,9 @@ local function restorePersistedState()
     if raw and raw ~= '' then
         local ok, data = pcall(json.decode, raw)
         if ok and type(data) == 'table' then
+            uiState = sanitizeUiState(data.ui, getDefaultUiState())
+            themeOverrides = sanitizeThemeOverrides(data.themeOverrides)
+
             local primary = validatePersistedFrequency(data.primary)
             local secondary = validatePersistedFrequency(data.secondary)
 
@@ -362,13 +687,17 @@ local function restorePersistedState()
             radioState.active = tostring(data.active or 'primary') == 'secondary' and 'secondary' or 'primary'
             applyActiveFallback()
             syncFrequencyStateToNui()
+            syncUiSettingsToNui()
             restored = true
         end
     end
 
     if not restored then
+        uiState = getDefaultUiState()
+        themeOverrides = getDefaultThemeOverrides()
         applyActiveFallback()
         syncFrequencyStateToNui()
+        syncUiSettingsToNui()
     end
 
     hasRestoredState = true
@@ -406,6 +735,8 @@ CreateThread(function()
         enabled = Config.Sounds.enabled,
         volume = Config.Sounds.volume
     })
+    syncUiSettingsToNui()
+    syncThemeOverrideStateToNui()
 
     scheduleStateRestore()
 end)
@@ -477,6 +808,7 @@ function ToggleRadioUI()
             globalMacros = Config.GlobalMacros or {},
             allMacroSets = buildMacroSetsPayload()
         })
+        syncUiSettingsToNui()
 
         Citizen.SetTimeout(10, function()
             SetNuiFocus(true, true)
@@ -507,6 +839,7 @@ function ToggleChatUI()
             globalMacros = Config.GlobalMacros or {},
             allMacroSets = buildMacroSetsPayload()
         })
+        syncUiSettingsToNui()
 
         Citizen.SetTimeout(10, function()
             SetNuiFocus(true, true)
@@ -658,7 +991,12 @@ end)
 RegisterNUICallback('sendMessage', function(data, cb)
     local message = tostring((data and data.message) or '')
     message = message:match('^%s*(.-)%s*$')
-    local frequency = normalizeFrequencyLabel(data and data.frequency)
+    local frequency = parseFrequency(data and data.frequency)
+    local clientMessageId = tostring((data and data.clientMessageId) or ''):match('^%s*(.-)%s*$')
+
+    if clientMessageId == '' then
+        clientMessageId = ('%d_%d'):format(GetGameTimer(), math.random(100000, 999999))
+    end
 
     if message == '' then
         cb({ success = false })
@@ -684,18 +1022,27 @@ RegisterNUICallback('sendMessage', function(data, cb)
     end
 
     if Config.UseAnimation then
-        local ped = PlayerPedId()
-        RequestAnimDict(Config.AnimationDict)
-        while not HasAnimDictLoaded(Config.AnimationDict) do
-            Wait(10)
-        end
-        TaskPlayAnim(ped, Config.AnimationDict, Config.AnimationName, 8.0, -8.0, -1, 49, 0, false, false, false)
-        Wait(1000)
-        StopAnimTask(ped, Config.AnimationDict, Config.AnimationName, 1.0)
+        CreateThread(function()
+            local ped = PlayerPedId()
+            RequestAnimDict(Config.AnimationDict)
+
+            local timeout = GetGameTimer() + 2000
+            while not HasAnimDictLoaded(Config.AnimationDict) and GetGameTimer() < timeout do
+                Wait(10)
+            end
+
+            if not HasAnimDictLoaded(Config.AnimationDict) then
+                return
+            end
+
+            TaskPlayAnim(ped, Config.AnimationDict, Config.AnimationName, 8.0, -8.0, 900, 49, 0, false, false, false)
+            Wait(900)
+            StopAnimTask(ped, Config.AnimationDict, Config.AnimationName, 1.0)
+        end)
     end
 
-    TriggerServerEvent('7_radio:server:sendMessage', frequency, message)
-    cb({ success = true })
+    TriggerServerEvent('7_radio:server:sendMessage', frequency, message, clientMessageId)
+    cb({ success = true, clientMessageId = clientMessageId })
 end)
 
 RegisterNUICallback('switchFrequency', function(_, cb)
@@ -720,6 +1067,7 @@ RegisterNUICallback('toggleChatRelay', function(data, cb)
     local requestedChannel = tostring((data and data.channel) or radioState.active)
     local channel = requestedChannel == 'secondary' and 'secondary' or 'primary'
     local targetFrequency = channel == 'primary' and radioState.primary or radioState.secondary
+    local explicitEnabled = data and data.enabled
 
     if not targetFrequency then
         radioState.chatRelay[channel] = false
@@ -749,7 +1097,11 @@ RegisterNUICallback('toggleChatRelay', function(data, cb)
         return
     end
 
-    radioState.chatRelay[channel] = not radioState.chatRelay[channel]
+    if type(explicitEnabled) == 'boolean' then
+        radioState.chatRelay[channel] = explicitEnabled
+    else
+        radioState.chatRelay[channel] = not radioState.chatRelay[channel]
+    end
     syncFrequencyStateToNui()
 
     cb({
@@ -761,7 +1113,187 @@ RegisterNUICallback('toggleChatRelay', function(data, cb)
     })
 end)
 
-RegisterNetEvent('7_radio:client:receiveMessage', function(frequency, senderName, message, senderId)
+RegisterNUICallback('saveUiSettings', function(data, cb)
+    local incoming = type(data) == 'table' and data.ui or nil
+    uiState = sanitizeUiState(incoming, uiState)
+
+    persistRadioState()
+    syncUiSettingsToNui()
+
+    cb({
+        success = true,
+        ui = uiState,
+        themeOverrides = themeOverrides
+    })
+end)
+
+RegisterNUICallback('setInterfaceMoveMode', function(data, cb)
+    local interfaceName = tostring((data and data.interface) or ''):lower()
+    local enabled = data and data.enabled == true
+
+    if interfaceName ~= 'radio' and interfaceName ~= 'chat' and interfaceName ~= 'macro' then
+        cb({ success = false })
+        return
+    end
+
+    SendNUIMessage({
+        action = 'moveModeState',
+        interface = interfaceName,
+        enabled = enabled
+    })
+
+    cb({
+        success = true,
+        interface = interfaceName,
+        enabled = enabled
+    })
+end)
+
+RegisterNUICallback('saveThemeOverride', function(data, cb)
+    local mode = tostring((data and data.mode) or ''):lower()
+    local theme = normalizeOverrideTheme(data)
+
+    if mode == 'exact' then
+        local freq = parseFrequency(data and data.frequency)
+        if not freq then
+            cb({ success = false, reason = 'invalid_frequency' })
+            return
+        end
+
+        themeOverrides.exact[freq] = theme
+    elseif mode == 'range' then
+        local minLabel = parseFrequency(data and data.min)
+        local maxLabel = parseFrequency(data and data.max)
+        if not minLabel or not maxLabel then
+            cb({ success = false, reason = 'invalid_range' })
+            return
+        end
+
+        local minNum = tonumber(minLabel) or 0
+        local maxNum = tonumber(maxLabel) or 0
+        if minNum > maxNum then
+            cb({ success = false, reason = 'invalid_range' })
+            return
+        end
+
+        local updated = false
+        for index, entry in ipairs(themeOverrides.ranges) do
+            if entry.min == minLabel and entry.max == maxLabel then
+                themeOverrides.ranges[index] = {
+                    min = minLabel,
+                    max = maxLabel,
+                    preset = theme.preset,
+                    accent = theme.accent
+                }
+                updated = true
+                break
+            end
+        end
+
+        if not updated then
+            themeOverrides.ranges[#themeOverrides.ranges + 1] = {
+                min = minLabel,
+                max = maxLabel,
+                preset = theme.preset,
+                accent = theme.accent
+            }
+        end
+    else
+        cb({ success = false, reason = 'invalid_mode' })
+        return
+    end
+
+    themeOverrides = sanitizeThemeOverrides(themeOverrides)
+    persistRadioState()
+    syncThemeOverrideStateToNui()
+    syncUiSettingsToNui()
+
+    cb({
+        success = true,
+        themeOverrides = themeOverrides
+    })
+end)
+
+RegisterNUICallback('deleteThemeOverride', function(data, cb)
+    local mode = tostring((data and data.mode) or ''):lower()
+
+    if mode == 'exact' then
+        local freq = parseFrequency(data and data.frequency)
+        if not freq then
+            cb({ success = false, reason = 'invalid_frequency' })
+            return
+        end
+        themeOverrides.exact[freq] = nil
+    elseif mode == 'range' then
+        local index = tonumber(data and data.index)
+        if not index or index < 1 or index > #themeOverrides.ranges then
+            cb({ success = false, reason = 'invalid_range' })
+            return
+        end
+        table.remove(themeOverrides.ranges, index)
+    else
+        cb({ success = false, reason = 'invalid_mode' })
+        return
+    end
+
+    themeOverrides = sanitizeThemeOverrides(themeOverrides)
+    persistRadioState()
+    syncThemeOverrideStateToNui()
+    syncUiSettingsToNui()
+
+    cb({
+        success = true,
+        themeOverrides = themeOverrides
+    })
+end)
+
+RegisterNUICallback('resetUiDefaults', function(_, cb)
+    uiState = getDefaultUiState()
+    themeOverrides = getDefaultThemeOverrides()
+
+    persistRadioState()
+    syncUiSettingsToNui()
+    syncThemeOverrideStateToNui()
+    notifyUiDefaultsApplied(false)
+
+    cb({
+        success = true,
+        ui = uiState,
+        themeOverrides = themeOverrides
+    })
+end)
+
+RegisterNUICallback('clearCache', function(_, cb)
+    local key = getStateStorageKey()
+    if key then
+        DeleteResourceKvp(key)
+    end
+
+    TriggerServerEvent('7_radio:server:resetPlayerFrequencies')
+
+    radioState.primary = nil
+    radioState.secondary = nil
+    radioState.active = 'primary'
+    radioState.chatRelay.primary = false
+    radioState.chatRelay.secondary = false
+    applyActiveFallback()
+
+    uiState = getDefaultUiState()
+    themeOverrides = getDefaultThemeOverrides()
+
+    syncFrequencyStateToNui(true)
+    syncUiSettingsToNui()
+    syncThemeOverrideStateToNui()
+    notifyUiDefaultsApplied(true)
+
+    cb({
+        success = true,
+        ui = uiState,
+        themeOverrides = themeOverrides
+    })
+end)
+
+RegisterNetEvent('7_radio:client:receiveMessage', function(frequency, senderName, message, senderId, clientMessageId, timestamp)
     local freqLabel = normalizeFrequencyLabel(frequency)
     if not freqLabel then
         return
@@ -778,18 +1310,16 @@ RegisterNetEvent('7_radio:client:receiveMessage', function(frequency, senderName
         sender = senderName,
         message = message,
         senderId = senderId,
+        clientMessageId = clientMessageId,
+        timestamp = timestamp,
         isMe = senderId == GetPlayerServerId(PlayerId())
     })
 
     if radioState.chatRelay[channel] and HasAccessToFrequency(freqLabel) then
         local cleanedMessage = stripGpsTokenFromMessage(message)
         local senderLabel = senderName or 'Unknown'
-
-        TriggerEvent('chat:addMessage', {
-            color = {0, 255, 163},
-            multiline = true,
-            args = {('[RADIO %s] %s'):format(freqLabel, senderLabel), cleanedMessage}
-        })
+        local relayHeader = ('[RADIO %s] %s'):format(freqLabel, senderLabel)
+        relayMessageToConfiguredChat(relayHeader, cleanedMessage)
     elseif radioState.chatRelay[channel] and not HasAccessToFrequency(freqLabel) then
         radioState.chatRelay[channel] = false
         syncFrequencyStateToNui()

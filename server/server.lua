@@ -2,6 +2,17 @@ local QBCore = exports['qb-core']:GetCoreObject()
 
 local radioFrequencies = {}
 local frequencyHistory = {}
+local playerMembership = {}
+local pendingHistoryLoads = {}
+local recentMessageIds = {}
+local lastMessageTick = {}
+
+local recentMessageWindowMs = 15000
+local sendRateLimitMs = 250
+
+local function trimString(value)
+    return tostring(value or ''):match('^%s*(.-)%s*$')
+end
 
 local function normalizeFrequency(value)
     if value == nil then
@@ -17,6 +28,17 @@ local function normalizeFrequency(value)
     end
 
     return string.format('%.2f', num)
+end
+
+local function isFrequencyInBounds(frequency)
+    local num = tonumber(frequency)
+    if not num then
+        return false
+    end
+
+    local minFrequency = tonumber(Config.MinFrequency) or 1.00
+    local maxFrequency = tonumber(Config.MaxFrequency) or 999.99
+    return num >= minFrequency and num <= maxFrequency
 end
 
 local function getTableLength(tbl)
@@ -140,6 +162,39 @@ function HasAccessToFrequency(source, frequency)
     return true
 end
 
+local function getPlayerMembershipCount(source)
+    local set = playerMembership[source]
+    if type(set) ~= 'table' then
+        return 0
+    end
+    return getTableLength(set)
+end
+
+local function addMembership(source, frequency)
+    if not playerMembership[source] then
+        playerMembership[source] = {}
+    end
+    playerMembership[source][frequency] = true
+end
+
+local function removeMembership(source, frequency)
+    local set = playerMembership[source]
+    if not set then
+        return
+    end
+
+    set[frequency] = nil
+    if next(set) == nil then
+        playerMembership[source] = nil
+    end
+end
+
+local function clearPlayerEphemeralState(source)
+    playerMembership[source] = nil
+    recentMessageIds[source] = nil
+    lastMessageTick[source] = nil
+end
+
 local function getPlayerRadioLabel(Player, source)
     local charInfo = Player.PlayerData and Player.PlayerData.charinfo
     if charInfo and charInfo.firstname and charInfo.lastname then
@@ -160,10 +215,12 @@ local function removePlayerFromFrequency(source, frequency)
     end
 
     players[source] = nil
+    removeMembership(source, frequency)
 
     if next(players) == nil then
         radioFrequencies[frequency] = nil
         frequencyHistory[frequency] = nil
+        pendingHistoryLoads[frequency] = nil
     end
 
     updateFrequencyCount(frequency)
@@ -175,15 +232,79 @@ local function removePlayerFromAllFrequencies(source)
     for frequency, players in pairs(radioFrequencies) do
         if players[source] then
             players[source] = nil
+            removeMembership(source, frequency)
             if next(players) == nil then
                 radioFrequencies[frequency] = nil
                 frequencyHistory[frequency] = nil
+                pendingHistoryLoads[frequency] = nil
             end
             updateFrequencyCount(frequency)
             removedAny = true
         end
     end
+    clearPlayerEphemeralState(source)
     return removedAny
+end
+
+local function dispatchLoadedHistory(frequency, history, customData)
+    local pending = pendingHistoryLoads[frequency]
+    if not pending then
+        return
+    end
+
+    pendingHistoryLoads[frequency] = nil
+    frequencyHistory[frequency] = history
+
+    local alreadySent = {}
+    for _, playerId in ipairs(pending.waiters or {}) do
+        if not alreadySent[playerId] then
+            alreadySent[playerId] = true
+            TriggerClientEvent('7_radio:client:loadHistory', playerId, frequency, history, customData)
+        end
+    end
+end
+
+local function queueHistoryLoad(source, frequency, customData)
+    if frequencyHistory[frequency] then
+        TriggerClientEvent('7_radio:client:loadHistory', source, frequency, frequencyHistory[frequency], customData)
+        return
+    end
+
+    local pending = pendingHistoryLoads[frequency]
+    if pending then
+        pending.waiters[#pending.waiters + 1] = source
+        return
+    end
+
+    pendingHistoryLoads[frequency] = {
+        waiters = { source }
+    }
+
+    if exports and exports.oxmysql then
+        local limit = Config.ChatHistoryLimit or 100
+        exports.oxmysql:execute('SELECT sender, message, timestamp, citizenid FROM radio_history WHERE frequency = ? ORDER BY id DESC LIMIT ?', {
+            frequency,
+            limit
+        }, function(results)
+            local history = {}
+            if results and #results > 0 then
+                for i = #results, 1, -1 do
+                    local row = results[i]
+                    history[#history + 1] = {
+                        frequency = frequency,
+                        sender = row.sender,
+                        message = row.message,
+                        timestamp = row.timestamp,
+                        citizenid = row.citizenid
+                    }
+                end
+            end
+            dispatchLoadedHistory(frequency, history, customData)
+        end)
+        return
+    end
+
+    dispatchLoadedHistory(frequency, {}, customData)
 end
 
 RegisterNetEvent('7_radio:server:joinFrequency', function(frequency)
@@ -199,8 +320,20 @@ RegisterNetEvent('7_radio:server:joinFrequency', function(frequency)
         return
     end
 
+    if not isFrequencyInBounds(freqKey) then
+        TriggerClientEvent('QBCore:Notify', src, 'Frequency out of range', 'error')
+        return
+    end
+
     if not HasAccessToFrequency(src, freqKey) then
         TriggerClientEvent('QBCore:Notify', src, 'You do not have access to this frequency', 'error')
+        return
+    end
+
+    local players = radioFrequencies[freqKey]
+    local alreadyJoined = players and players[src] ~= nil
+    if not alreadyJoined and getPlayerMembershipCount(src) >= 2 then
+        TriggerClientEvent('QBCore:Notify', src, 'You can only be connected to two frequencies', 'error')
         return
     end
 
@@ -213,6 +346,7 @@ RegisterNetEvent('7_radio:server:joinFrequency', function(frequency)
         job = (Player.PlayerData and Player.PlayerData.job and Player.PlayerData.job.name) or 'unknown',
         citizenid = (Player.PlayerData and Player.PlayerData.citizenid) or nil
     }
+    addMembership(src, freqKey)
 
     updateFrequencyCount(freqKey)
 
@@ -223,38 +357,7 @@ RegisterNetEvent('7_radio:server:joinFrequency', function(frequency)
         macros = freqConfig and freqConfig.macros or nil
     }
 
-    if frequencyHistory[freqKey] then
-        TriggerClientEvent('7_radio:client:loadHistory', src, freqKey, frequencyHistory[freqKey], customData)
-        return
-    end
-
-    if exports and exports.oxmysql then
-        local limit = Config.ChatHistoryLimit or 100
-        exports.oxmysql:execute('SELECT sender, message, timestamp, citizenid FROM radio_history WHERE frequency = ? ORDER BY id DESC LIMIT ?', {
-            freqKey,
-            limit
-        }, function(results)
-            local history = {}
-            if results and #results > 0 then
-                for i = #results, 1, -1 do
-                    local row = results[i]
-                    history[#history + 1] = {
-                        frequency = freqKey,
-                        sender = row.sender,
-                        message = row.message,
-                        timestamp = row.timestamp,
-                        citizenid = row.citizenid
-                    }
-                end
-            end
-
-            frequencyHistory[freqKey] = history
-            TriggerClientEvent('7_radio:client:loadHistory', src, freqKey, history, customData)
-        end)
-        return
-    end
-
-    TriggerClientEvent('7_radio:client:loadHistory', src, freqKey, {}, customData)
+    queueHistoryLoad(src, freqKey, customData)
 end)
 
 
@@ -271,17 +374,64 @@ RegisterNetEvent('7_radio:server:resetPlayerFrequencies', function()
     removePlayerFromAllFrequencies(source)
 end)
 
-RegisterNetEvent('7_radio:server:sendMessage', function(frequency, message)
+RegisterNetEvent('7_radio:server:sendMessage', function(frequency, message, clientMessageId)
     local src = source
     local Player = QBCore.Functions.GetPlayer(src)
     if not Player then
         return
     end
 
+    local now = GetGameTimer()
+    local lastTick = lastMessageTick[src] or 0
+    if now - lastTick < sendRateLimitMs then
+        return
+    end
+    lastMessageTick[src] = now
+
     local freqKey = normalizeFrequency(frequency)
     if not freqKey then
         TriggerClientEvent('QBCore:Notify', src, 'Invalid frequency', 'error')
         return
+    end
+
+    if not isFrequencyInBounds(freqKey) then
+        TriggerClientEvent('QBCore:Notify', src, 'Frequency out of range', 'error')
+        return
+    end
+
+    local trimmedMessage = trimString(message)
+    if trimmedMessage == '' then
+        return
+    end
+
+    local maxLength = tonumber(Config.MaxMessageLength) or 500
+    if #trimmedMessage > maxLength then
+        TriggerClientEvent('QBCore:Notify', src, 'Message too long', 'error')
+        return
+    end
+
+    local messageId = trimString(clientMessageId)
+    if messageId ~= '' then
+        local bucket = recentMessageIds[src]
+        if not bucket then
+            bucket = {}
+            recentMessageIds[src] = bucket
+        end
+
+        for existingId, expiry in pairs(bucket) do
+            if expiry <= now then
+                bucket[existingId] = nil
+            end
+        end
+
+        local expiry = bucket[messageId]
+        if expiry and expiry > now then
+            return
+        end
+
+        bucket[messageId] = now + recentMessageWindowMs
+    else
+        messageId = nil
     end
 
     local players = radioFrequencies[freqKey]
@@ -291,9 +441,8 @@ RegisterNetEvent('7_radio:server:sendMessage', function(frequency, message)
     end
 
     if not HasAccessToFrequency(src, freqKey) then
-        players[src] = nil
+        removePlayerFromFrequency(src, freqKey)
         TriggerClientEvent('QBCore:Notify', src, 'You no longer have access to this frequency', 'error')
-        updateFrequencyCount(freqKey)
         return
     end
 
@@ -320,12 +469,13 @@ RegisterNetEvent('7_radio:server:sendMessage', function(frequency, message)
     end
 
     local toRemove = {}
+    local timestamp = os.time() * 1000
 
     for playerId in pairs(players) do
         local ping = GetPlayerPing(playerId)
         if ping and ping > 0 then
             if HasAccessToFrequency(playerId, freqKey) then
-                TriggerClientEvent('7_radio:client:receiveMessage', playerId, freqKey, displaySender, message, src)
+                TriggerClientEvent('7_radio:client:receiveMessage', playerId, freqKey, displaySender, trimmedMessage, src, messageId, timestamp)
             else
                 toRemove[#toRemove + 1] = playerId
                 TriggerClientEvent('QBCore:Notify', playerId, 'You no longer have access to this frequency', 'error')
@@ -337,17 +487,17 @@ RegisterNetEvent('7_radio:server:sendMessage', function(frequency, message)
 
     for _, playerId in ipairs(toRemove) do
         players[playerId] = nil
+        removeMembership(playerId, freqKey)
     end
 
     if #toRemove > 0 then
         if next(players) == nil then
             radioFrequencies[freqKey] = nil
             frequencyHistory[freqKey] = nil
+            pendingHistoryLoads[freqKey] = nil
         end
         updateFrequencyCount(freqKey)
     end
-
-    local timestamp = os.time() * 1000
 
     if not frequencyHistory[freqKey] then
         frequencyHistory[freqKey] = {}
@@ -358,9 +508,10 @@ RegisterNetEvent('7_radio:server:sendMessage', function(frequency, message)
         frequency = freqKey,
         sender = displaySender,
         citizenid = Player.PlayerData.citizenid,
-        message = message,
+        message = trimmedMessage,
         timestamp = timestamp,
-        senderId = src
+        senderId = src,
+        clientMessageId = messageId
     }
 
     local limit = Config.ChatHistoryLimit or 100
@@ -373,7 +524,7 @@ RegisterNetEvent('7_radio:server:sendMessage', function(frequency, message)
             freqKey,
             displaySender,
             Player.PlayerData.citizenid,
-            message,
+            trimmedMessage,
             timestamp
         }, function() end)
     end
@@ -381,6 +532,7 @@ end)
 
 AddEventHandler('playerDropped', function()
     removePlayerFromAllFrequencies(source)
+    clearPlayerEphemeralState(source)
 end)
 
 QBCore.Commands.Add('radiolist', 'View list of active frequencies (admin)', {}, false, function(source)

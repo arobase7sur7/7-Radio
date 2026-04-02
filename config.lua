@@ -7,6 +7,13 @@ Config.SwitchFrequencyKey = 'TAB' -- Key to switch frequency on radio chat
 
 Config.RadioItem = 'radio' -- Name of the item needed to open the radio / put "none" or false to disable item needed
 
+-- Chat relay output to the right tab when using my poodlechat remake resource, otherwise it will fallback to default chat output
+Config.ChatRelay = {
+    provider = 'auto', -- 'auto' = use poodlechat when available, otherwise default chat / 'poodlechat' / 'chat'
+    poodleChatResource = 'poodlechat', -- Resource name used for exports
+    targetChannel = 'radio', -- poodlechat target channel when provider is auto/poodlechat (example: 'local' or 'radio')
+    fallbackToDefault = true -- When poodlechat fails/unavailable, fallback to TriggerEvent('chat:addMessage', ...)
+}
 
 -- Restricted frequencies
 Config.RestrictedFrequencies = {
