@@ -374,6 +374,65 @@ RegisterNetEvent('7_radio:server:resetPlayerFrequencies', function()
     removePlayerFromAllFrequencies(source)
 end)
 
+
+RegisterNetEvent('7_radio:server:restoreFrequencies', function(primary, secondary)
+    local src = source
+    local Player = QBCore.Functions.GetPlayer(src)
+    if not Player then
+        return
+    end
+
+    removePlayerFromAllFrequencies(src)
+
+    if primary then
+        local freqKey = normalizeFrequency(primary)
+        if freqKey and isFrequencyInBounds(freqKey) and HasAccessToFrequency(src, freqKey) then
+            if not radioFrequencies[freqKey] then
+                radioFrequencies[freqKey] = {}
+            end
+            radioFrequencies[freqKey][src] = {
+                name = getPlayerRadioLabel(Player, src),
+                job = (Player.PlayerData and Player.PlayerData.job and Player.PlayerData.job.name) or 'unknown',
+                citizenid = (Player.PlayerData and Player.PlayerData.citizenid) or nil
+            }
+            addMembership(src, freqKey)
+            updateFrequencyCount(freqKey)
+
+            local freqConfig = getFrequencyConfig(freqKey)
+            local customData = {
+                label = freqConfig and freqConfig.label or nil,
+                color = freqConfig and freqConfig.color or nil,
+                macros = freqConfig and freqConfig.macros or nil
+            }
+            queueHistoryLoad(src, freqKey, customData)
+        end
+    end
+
+    if secondary and secondary ~= primary then
+        local freqKey = normalizeFrequency(secondary)
+        if freqKey and isFrequencyInBounds(freqKey) and HasAccessToFrequency(src, freqKey) and getPlayerMembershipCount(src) < 2 then
+            if not radioFrequencies[freqKey] then
+                radioFrequencies[freqKey] = {}
+            end
+            radioFrequencies[freqKey][src] = {
+                name = getPlayerRadioLabel(Player, src),
+                job = (Player.PlayerData and Player.PlayerData.job and Player.PlayerData.job.name) or 'unknown',
+                citizenid = (Player.PlayerData and Player.PlayerData.citizenid) or nil
+            }
+            addMembership(src, freqKey)
+            updateFrequencyCount(freqKey)
+
+            local freqConfig = getFrequencyConfig(freqKey)
+            local customData = {
+                label = freqConfig and freqConfig.label or nil,
+                color = freqConfig and freqConfig.color or nil,
+                macros = freqConfig and freqConfig.macros or nil
+            }
+            queueHistoryLoad(src, freqKey, customData)
+        end
+    end
+end)
+
 RegisterNetEvent('7_radio:server:sendMessage', function(frequency, message, clientMessageId)
     local src = source
     local Player = QBCore.Functions.GetPlayer(src)

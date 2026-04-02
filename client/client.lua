@@ -670,17 +670,15 @@ local function restorePersistedState()
             radioState.chatRelay.primary = false
             radioState.chatRelay.secondary = false
 
-            TriggerServerEvent('7_radio:server:resetPlayerFrequencies')
+            TriggerServerEvent('7_radio:server:restoreFrequencies', primary, secondary)
 
             if primary then
                 radioState.primary = primary
-                TriggerServerEvent('7_radio:server:joinFrequency', primary, true)
                 radioState.chatRelay.primary = relayPrimary
             end
 
             if secondary then
                 radioState.secondary = secondary
-                TriggerServerEvent('7_radio:server:joinFrequency', secondary, false)
                 radioState.chatRelay.secondary = relaySecondary
             end
 
