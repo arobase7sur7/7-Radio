@@ -2428,303 +2428,7 @@ window.addEventListener("message", (event) => {
   }
 });
 
-$(document).ready(() => {
-  cacheDom();
-  initSounds();
-  document.body.style.pointerEvents = "none";
-  applyUiSettingsVisuals(false);
-
-  $(document).on("click", ".btn-macro", () => {
-    toggleMacroModal();
-  });
-
-  $(document).on("click", ".macro-item", function handleMacroItemClick(event) {
-    if ($(event.target).closest(".btn-delete-macro").length) {
-      return;
-    }
-
-    const encodedLabel = $(this).attr("data-label") || "";
-    const encodedValue = $(this).attr("data-value") || "";
-
-    handleMacroClick(decodeURIComponent(encodedLabel), decodeURIComponent(encodedValue));
-  });
-
-  $(document).on("click", ".btn-delete-macro", function handleDeleteClick(event) {
-    event.preventDefault();
-    event.stopPropagation();
-
-    const id = Number($(this).attr("data-id"));
-    if (!Number.isFinite(id)) {
-      return;
-    }
-
-    openDeleteMacroConfirm(id);
-  });
-
-  $(document).on("click", ".macro-suggestion-item", function handleSuggestionClick() {
-    const index = Number($(this).attr("data-index"));
-    if (!Number.isFinite(index)) {
-      return;
-    }
-    applyMacroSuggestion(index);
-  });
-
-  $(document).on("click", ".btn-delete-theme", function handleThemeDelete() {
-    const mode = String($(this).attr("data-mode") || "");
-
-    if (mode === "exact") {
-      const frequency = String($(this).attr("data-frequency") || "");
-      if (!frequency) {
-        return;
-      }
-      deleteThemeOverride("exact", frequency, null);
-      return;
-    }
-
-    if (mode === "range") {
-      const index = Number($(this).attr("data-index"));
-      if (!Number.isFinite(index)) {
-        return;
-      }
-      deleteThemeOverride("range", null, index);
-    }
-  });
-
-  $(document).on("change", ".theme-override-color", function handleThemeColorChange() {
-    const mode = String($(this).attr("data-mode") || "");
-    const accent = String($(this).val() || "");
-    const preset = String($(this).attr("data-preset") || "");
-
-    if (mode === "exact") {
-      const frequency = String($(this).attr("data-frequency") || "");
-      if (!frequency) {
-        return;
-      }
-      saveThemeOverrideColor("exact", accent, { frequency, preset });
-      return;
-    }
-
-    if (mode === "range") {
-      const min = String($(this).attr("data-min") || "");
-      const max = String($(this).attr("data-max") || "");
-      if (!min || !max) {
-        return;
-      }
-      saveThemeOverrideColor("range", accent, { min, max, preset });
-    }
-  });
-
-  $("#chat-input").on("input", () => {
-    updateCharCount();
-    updateMacroSuggestions();
-  });
-
-  $("#chat-input").on("keydown", (event) => {
-    if (handleSuggestionNavigation(event)) {
-      return;
-    }
-
-    if (event.key === "Enter") {
-      event.preventDefault();
-      sendMessage();
-    }
-  });
-
-  $("#macro-search-input").on("input", () => {
-    filterMacros();
-  });
-
-  $("#delete-macro-overlay").on("click", (event) => {
-    if (event.target && event.target.id === "delete-macro-overlay") {
-      closeDeleteMacroConfirm();
-    }
-  });
-
-  if (dom.settingsAutoScroll) {
-    $(dom.settingsAutoScroll).on("change", function onAutoScrollChange() {
-      toggleAutoScroll(this.checked);
-    });
-  }
-
-  if (dom.settingsRelayPrimary) {
-    $(dom.settingsRelayPrimary).on("change", function onRelayPrimaryChange() {
-      toggleChatRelay("primary", this.checked);
-    });
-  }
-
-  if (dom.settingsRelaySecondary) {
-    $(dom.settingsRelaySecondary).on("change", function onRelaySecondaryChange() {
-      toggleChatRelay("secondary", this.checked);
-    });
-  }
-
-  if (dom.settingsThemePreset) {
-    $(dom.settingsThemePreset).on("change", function onThemePresetChange() {
-      uiSettings.theme.preset = normalizePreset(this.value, uiSettings.theme.preset);
-      applyUiSettingsVisuals(true);
-      updateChatFrequencyDisplay();
-      scheduleUiSave();
-    });
-  }
-
-  if (dom.settingsThemeAccent) {
-    $(dom.settingsThemeAccent).on("input", function onThemeAccentInput() {
-      uiSettings.theme.accent = normalizeColor(this.value, uiSettings.theme.accent);
-      applyUiSettingsVisuals(true);
-      updateChatFrequencyDisplay();
-      scheduleUiSave();
-    });
-  }
-
-  if (dom.themeToggleRange) {
-    $(dom.themeToggleRange).on("click", () => {
-      if (!themeRangeEnabled) {
-        const hasBase = normalizeFrequency(dom.settingsThemeBase && dom.settingsThemeBase.value);
-        if (!hasBase) {
-          return;
-        }
-      }
-      setThemeRangeEnabled(!themeRangeEnabled, false);
-    });
-  }
-
-  if (dom.settingsThemeBase) {
-    $(dom.settingsThemeBase).on("input", () => {
-      const hasBase = normalizeFrequency(dom.settingsThemeBase.value);
-      if (!hasBase && themeRangeEnabled) {
-        setThemeRangeEnabled(false, false);
-      }
-    });
-  }
-
-  if (dom.themeSaveEntry) {
-    $(dom.themeSaveEntry).on("click", () => {
-      saveThemeOverrideEntry();
-    });
-  }
-
-  if (dom.openLayoutMode) {
-    $(dom.openLayoutMode).on("click", () => {
-      enterLayoutMode();
-    });
-  }
-
-  $("#setting-reset-defaults").on("click", () => {
-    resetUiDefaults();
-  });
-
-  $("#setting-clear-cache").on("click", () => {
-    clearCache();
-  });
-
-  if (dom.clearCacheCancel) {
-    $(dom.clearCacheCancel).on("click", () => {
-      closeClearCacheConfirm();
-    });
-  }
-
-  if (dom.clearCacheConfirm) {
-    $(dom.clearCacheConfirm).on("click", () => {
-      confirmClearCache();
-    });
-  }
-
-  if (dom.clearCacheOverlay) {
-    $(dom.clearCacheOverlay).on("click", (event) => {
-      if (event.target && event.target.id === "clear-cache-overlay") {
-        closeClearCacheConfirm();
-      }
-    });
-  }
-
-  [dom.layoutTargetRadio, dom.layoutTargetChat, dom.layoutTargetMacro].forEach((button) => {
-    if (!button) {
-      return;
-    }
-    $(button).on("click", () => {
-      const name = String(button.getAttribute("data-interface") || "");
-      setLayoutTarget(name);
-    });
-  });
-
-  if (dom.layoutSizeMinus) {
-    $(dom.layoutSizeMinus).on("click", () => {
-      changeSelectedInterfaceSize(-INTERFACE_SCALE_STEP);
-    });
-  }
-
-  if (dom.layoutSizePlus) {
-    $(dom.layoutSizePlus).on("click", () => {
-      changeSelectedInterfaceSize(INTERFACE_SCALE_STEP);
-    });
-  }
-
-  if (dom.layoutSizeReset) {
-    $(dom.layoutSizeReset).on("click", () => {
-      resetSelectedInterfaceSize();
-    });
-  }
-
-  if (dom.layoutTextMinus) {
-    $(dom.layoutTextMinus).on("click", () => {
-      changeTextSize(-TEXT_SCALE_STEP);
-    });
-  }
-
-  if (dom.layoutTextPlus) {
-    $(dom.layoutTextPlus).on("click", () => {
-      changeTextSize(TEXT_SCALE_STEP);
-    });
-  }
-
-  if (dom.layoutTextReset) {
-    $(dom.layoutTextReset).on("click", () => {
-      resetTextSize();
-    });
-  }
-
-  if (dom.layoutCancel) {
-    $(dom.layoutCancel).on("click", () => {
-      closeLayoutMode(false, true);
-    });
-  }
-
-  if (dom.layoutSave) {
-    $(dom.layoutSave).on("click", () => {
-      closeLayoutMode(true, true);
-    });
-  }
-
-  if (dom.radioPanel) {
-    dom.radioPanel.addEventListener("pointerdown", (event) => beginMoveDrag("radio", event));
-  }
-
-  if (dom.chatPanel) {
-    dom.chatPanel.addEventListener("pointerdown", (event) => beginMoveDrag("chat", event));
-  }
-
-  if (dom.macroPanel) {
-    dom.macroPanel.addEventListener("pointerdown", (event) => beginMoveDrag("macro", event));
-  }
-
-  window.addEventListener("pointermove", (event) => {
-    updateMoveDrag(event.clientX, event.clientY);
-  });
-
-  window.addEventListener("pointerup", (event) => {
-    endMoveDrag(event);
-  });
-
-  window.addEventListener("pointercancel", (event) => {
-    endMoveDrag(event);
-  });
-
-  window.addEventListener("resize", () => {
-    applyUiSettingsVisuals(true);
-  });
-});
-
-document.addEventListener("keydown", (event) => {
+function handleGlobalKeyDown(event) {
   if (event.key === "Escape") {
     if (!$("#clear-cache-overlay").hasClass("hidden")) {
       event.preventDefault();
@@ -2783,4 +2487,306 @@ document.addEventListener("keydown", (event) => {
     event.preventDefault();
     switchFrequency();
   }
+}
+
+$(document).ready(() => {
+  const ns = ".radioNui";
+
+  cacheDom();
+  initSounds();
+  document.body.style.pointerEvents = "none";
+  applyUiSettingsVisuals(false);
+
+  $(document).off(ns);
+  $(window).off(ns);
+
+  $(document).off(`click${ns}`, ".btn-macro").on(`click${ns}`, ".btn-macro", () => {
+    toggleMacroModal();
+  });
+
+  $(document).off(`click${ns}`, ".macro-item").on(`click${ns}`, ".macro-item", function handleMacroItemClick(event) {
+    if ($(event.target).closest(".btn-delete-macro").length) {
+      return;
+    }
+
+    const encodedLabel = $(this).attr("data-label") || "";
+    const encodedValue = $(this).attr("data-value") || "";
+    handleMacroClick(decodeURIComponent(encodedLabel), decodeURIComponent(encodedValue));
+  });
+
+  $(document).off(`click${ns}`, ".btn-delete-macro").on(`click${ns}`, ".btn-delete-macro", function handleDeleteClick(event) {
+    event.preventDefault();
+    event.stopPropagation();
+
+    const id = Number($(this).attr("data-id"));
+    if (!Number.isFinite(id)) {
+      return;
+    }
+
+    openDeleteMacroConfirm(id);
+  });
+
+  $(document).off(`click${ns}`, ".macro-suggestion-item").on(`click${ns}`, ".macro-suggestion-item", function handleSuggestionClick() {
+    const index = Number($(this).attr("data-index"));
+    if (!Number.isFinite(index)) {
+      return;
+    }
+    applyMacroSuggestion(index);
+  });
+
+  $(document).off(`click${ns}`, ".btn-delete-theme").on(`click${ns}`, ".btn-delete-theme", function handleThemeDelete() {
+    const mode = String($(this).attr("data-mode") || "");
+
+    if (mode === "exact") {
+      const frequency = String($(this).attr("data-frequency") || "");
+      if (!frequency) {
+        return;
+      }
+      deleteThemeOverride("exact", frequency, null);
+      return;
+    }
+
+    if (mode === "range") {
+      const index = Number($(this).attr("data-index"));
+      if (!Number.isFinite(index)) {
+        return;
+      }
+      deleteThemeOverride("range", null, index);
+    }
+  });
+
+  $(document).off(`change${ns}`, ".theme-override-color").on(`change${ns}`, ".theme-override-color", function handleThemeColorChange() {
+    const mode = String($(this).attr("data-mode") || "");
+    const accent = String($(this).val() || "");
+    const preset = String($(this).attr("data-preset") || "");
+
+    if (mode === "exact") {
+      const frequency = String($(this).attr("data-frequency") || "");
+      if (!frequency) {
+        return;
+      }
+      saveThemeOverrideColor("exact", accent, { frequency, preset });
+      return;
+    }
+
+    if (mode === "range") {
+      const min = String($(this).attr("data-min") || "");
+      const max = String($(this).attr("data-max") || "");
+      if (!min || !max) {
+        return;
+      }
+      saveThemeOverrideColor("range", accent, { min, max, preset });
+    }
+  });
+
+  $("#chat-input").off(ns)
+    .on(`input${ns}`, () => {
+      updateCharCount();
+      updateMacroSuggestions();
+    })
+    .on(`keydown${ns}`, (event) => {
+      if (handleSuggestionNavigation(event)) {
+        return;
+      }
+
+      if (event.key === "Enter") {
+        event.preventDefault();
+        sendMessage();
+      }
+    });
+
+  $("#macro-search-input").off(ns).on(`input${ns}`, () => {
+    filterMacros();
+  });
+
+  $("#delete-macro-overlay").off(ns).on(`click${ns}`, (event) => {
+    if (event.target && event.target.id === "delete-macro-overlay") {
+      closeDeleteMacroConfirm();
+    }
+  });
+
+  if (dom.settingsAutoScroll) {
+    $(dom.settingsAutoScroll).off(ns).on(`change${ns}`, function onAutoScrollChange() {
+      toggleAutoScroll(this.checked);
+    });
+  }
+
+  if (dom.settingsRelayPrimary) {
+    $(dom.settingsRelayPrimary).off(ns).on(`change${ns}`, function onRelayPrimaryChange() {
+      toggleChatRelay("primary", this.checked);
+    });
+  }
+
+  if (dom.settingsRelaySecondary) {
+    $(dom.settingsRelaySecondary).off(ns).on(`change${ns}`, function onRelaySecondaryChange() {
+      toggleChatRelay("secondary", this.checked);
+    });
+  }
+
+  if (dom.settingsThemePreset) {
+    $(dom.settingsThemePreset).off(ns).on(`change${ns}`, function onThemePresetChange() {
+      uiSettings.theme.preset = normalizePreset(this.value, uiSettings.theme.preset);
+      applyUiSettingsVisuals(true);
+      updateChatFrequencyDisplay();
+      scheduleUiSave();
+    });
+  }
+
+  if (dom.settingsThemeAccent) {
+    $(dom.settingsThemeAccent).off(ns).on(`input${ns}`, function onThemeAccentInput() {
+      uiSettings.theme.accent = normalizeColor(this.value, uiSettings.theme.accent);
+      applyUiSettingsVisuals(true);
+      updateChatFrequencyDisplay();
+      scheduleUiSave();
+    });
+  }
+
+  if (dom.themeToggleRange) {
+    $(dom.themeToggleRange).off(ns).on(`click${ns}`, () => {
+      if (!themeRangeEnabled) {
+        const hasBase = normalizeFrequency(dom.settingsThemeBase && dom.settingsThemeBase.value);
+        if (!hasBase) {
+          return;
+        }
+      }
+      setThemeRangeEnabled(!themeRangeEnabled, false);
+    });
+  }
+
+  if (dom.settingsThemeBase) {
+    $(dom.settingsThemeBase).off(ns).on(`input${ns}`, () => {
+      const hasBase = normalizeFrequency(dom.settingsThemeBase.value);
+      if (!hasBase && themeRangeEnabled) {
+        setThemeRangeEnabled(false, false);
+      }
+    });
+  }
+
+  if (dom.themeSaveEntry) {
+    $(dom.themeSaveEntry).off(ns).on(`click${ns}`, () => {
+      saveThemeOverrideEntry();
+    });
+  }
+
+  if (dom.openLayoutMode) {
+    $(dom.openLayoutMode).off(ns).on(`click${ns}`, () => {
+      enterLayoutMode();
+    });
+  }
+
+  $("#setting-reset-defaults").off(ns).on(`click${ns}`, () => {
+    resetUiDefaults();
+  });
+
+  $("#setting-clear-cache").off(ns).on(`click${ns}`, () => {
+    clearCache();
+  });
+
+  if (dom.clearCacheCancel) {
+    $(dom.clearCacheCancel).off(ns).on(`click${ns}`, () => {
+      closeClearCacheConfirm();
+    });
+  }
+
+  if (dom.clearCacheConfirm) {
+    $(dom.clearCacheConfirm).off(ns).on(`click${ns}`, () => {
+      confirmClearCache();
+    });
+  }
+
+  if (dom.clearCacheOverlay) {
+    $(dom.clearCacheOverlay).off(ns).on(`click${ns}`, (event) => {
+      if (event.target && event.target.id === "clear-cache-overlay") {
+        closeClearCacheConfirm();
+      }
+    });
+  }
+
+  [dom.layoutTargetRadio, dom.layoutTargetChat, dom.layoutTargetMacro].forEach((button) => {
+    if (!button) {
+      return;
+    }
+    $(button).off(ns).on(`click${ns}`, () => {
+      const name = String(button.getAttribute("data-interface") || "");
+      setLayoutTarget(name);
+    });
+  });
+
+  if (dom.layoutSizeMinus) {
+    $(dom.layoutSizeMinus).off(ns).on(`click${ns}`, () => {
+      changeSelectedInterfaceSize(-INTERFACE_SCALE_STEP);
+    });
+  }
+
+  if (dom.layoutSizePlus) {
+    $(dom.layoutSizePlus).off(ns).on(`click${ns}`, () => {
+      changeSelectedInterfaceSize(INTERFACE_SCALE_STEP);
+    });
+  }
+
+  if (dom.layoutSizeReset) {
+    $(dom.layoutSizeReset).off(ns).on(`click${ns}`, () => {
+      resetSelectedInterfaceSize();
+    });
+  }
+
+  if (dom.layoutTextMinus) {
+    $(dom.layoutTextMinus).off(ns).on(`click${ns}`, () => {
+      changeTextSize(-TEXT_SCALE_STEP);
+    });
+  }
+
+  if (dom.layoutTextPlus) {
+    $(dom.layoutTextPlus).off(ns).on(`click${ns}`, () => {
+      changeTextSize(TEXT_SCALE_STEP);
+    });
+  }
+
+  if (dom.layoutTextReset) {
+    $(dom.layoutTextReset).off(ns).on(`click${ns}`, () => {
+      resetTextSize();
+    });
+  }
+
+  if (dom.layoutCancel) {
+    $(dom.layoutCancel).off(ns).on(`click${ns}`, () => {
+      closeLayoutMode(false, true);
+    });
+  }
+
+  if (dom.layoutSave) {
+    $(dom.layoutSave).off(ns).on(`click${ns}`, () => {
+      closeLayoutMode(true, true);
+    });
+  }
+
+  if (dom.radioPanel) {
+    $(dom.radioPanel).off(ns).on(`pointerdown${ns}`, (event) => beginMoveDrag("radio", event));
+  }
+
+  if (dom.chatPanel) {
+    $(dom.chatPanel).off(ns).on(`pointerdown${ns}`, (event) => beginMoveDrag("chat", event));
+  }
+
+  if (dom.macroPanel) {
+    $(dom.macroPanel).off(ns).on(`pointerdown${ns}`, (event) => beginMoveDrag("macro", event));
+  }
+
+  $(window)
+    .on(`pointermove${ns}`, (event) => {
+      updateMoveDrag(event.clientX, event.clientY);
+    })
+    .on(`pointerup${ns}`, (event) => {
+      endMoveDrag(event);
+    })
+    .on(`pointercancel${ns}`, (event) => {
+      endMoveDrag(event);
+    })
+    .on(`resize${ns}`, () => {
+      applyUiSettingsVisuals(true);
+    });
+
+  $(document).on(`keydown${ns}`, handleGlobalKeyDown);
+
+  postToResource("nuiReady", {}).catch(() => {});
 });

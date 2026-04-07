@@ -3,6 +3,7 @@ local QBCore = exports['qb-core']:GetCoreObject()
 local radioFrequencies = {}
 local frequencyHistory = {}
 local playerMembership = {}
+local playerRadioState = {}
 local pendingHistoryLoads = {}
 local recentMessageIds = {}
 local lastMessageTick = {}
@@ -162,14 +163,6 @@ function HasAccessToFrequency(source, frequency)
     return true
 end
 
-local function getPlayerMembershipCount(source)
-    local set = playerMembership[source]
-    if type(set) ~= 'table' then
-        return 0
-    end
-    return getTableLength(set)
-end
-
 local function addMembership(source, frequency)
     if not playerMembership[source] then
         playerMembership[source] = {}
@@ -191,6 +184,7 @@ end
 
 local function clearPlayerEphemeralState(source)
     playerMembership[source] = nil
+    playerRadioState[source] = nil
     recentMessageIds[source] = nil
     lastMessageTick[source] = nil
 end
@@ -306,131 +300,227 @@ local function queueHistoryLoad(source, frequency, customData)
 
     dispatchLoadedHistory(frequency, {}, customData)
 end
-
-RegisterNetEvent('7_radio:server:joinFrequency', function(frequency)
-    local src = source
-    local Player = QBCore.Functions.GetPlayer(src)
-    if not Player then
-        return
+local function clonePlayerRadioState(source)
+    local current = playerRadioState[source]
+    if current then
+        return {
+            primary = current.primary,
+            secondary = current.secondary,
+            active = current.active == 'secondary' and 'secondary' or 'primary',
+            relay = {
+                primary = current.relay and current.relay.primary == true or false,
+                secondary = current.relay and current.relay.secondary == true or false
+            }
+        }
     end
 
-    local freqKey = normalizeFrequency(frequency)
-    if not freqKey then
-        TriggerClientEvent('QBCore:Notify', src, 'Invalid frequency', 'error')
-        return
-    end
-
-    if not isFrequencyInBounds(freqKey) then
-        TriggerClientEvent('QBCore:Notify', src, 'Frequency out of range', 'error')
-        return
-    end
-
-    if not HasAccessToFrequency(src, freqKey) then
-        TriggerClientEvent('QBCore:Notify', src, 'You do not have access to this frequency', 'error')
-        return
-    end
-
-    local players = radioFrequencies[freqKey]
-    local alreadyJoined = players and players[src] ~= nil
-    if not alreadyJoined and getPlayerMembershipCount(src) >= 2 then
-        TriggerClientEvent('QBCore:Notify', src, 'You can only be connected to two frequencies', 'error')
-        return
-    end
-
-    if not radioFrequencies[freqKey] then
-        radioFrequencies[freqKey] = {}
-    end
-
-    radioFrequencies[freqKey][src] = {
-        name = getPlayerRadioLabel(Player, src),
-        job = (Player.PlayerData and Player.PlayerData.job and Player.PlayerData.job.name) or 'unknown',
-        citizenid = (Player.PlayerData and Player.PlayerData.citizenid) or nil
+    return {
+        primary = nil,
+        secondary = nil,
+        active = 'primary',
+        relay = {
+            primary = false,
+            secondary = false
+        }
     }
-    addMembership(src, freqKey)
+end
 
-    updateFrequencyCount(freqKey)
+local function sanitizeRequestedFrequency(source, value)
+    local freqKey = normalizeFrequency(value)
+    if not freqKey then
+        return nil
+    end
+    if not isFrequencyInBounds(freqKey) then
+        return nil
+    end
+    if not HasAccessToFrequency(source, freqKey) then
+        return nil
+    end
+    return freqKey
+end
 
-    local freqConfig = getFrequencyConfig(freqKey)
-    local customData = {
+local function makeStateSet(state)
+    local set = {}
+    if state.primary then
+        set[state.primary] = true
+    end
+    if state.secondary then
+        set[state.secondary] = true
+    end
+    return set
+end
+
+local function buildFrequencyCustomData(frequency)
+    local freqConfig = getFrequencyConfig(frequency)
+    return {
         label = freqConfig and freqConfig.label or nil,
         color = freqConfig and freqConfig.color or nil,
         macros = freqConfig and freqConfig.macros or nil
     }
+end
 
-    queueHistoryLoad(src, freqKey, customData)
+local function sendAppliedStateToClient(source, requestId, status)
+    local state = clonePlayerRadioState(source)
+    TriggerClientEvent(
+        '7_radio:client:frequencyStateApplied',
+        source,
+        requestId,
+        status or 'applied',
+        state.primary,
+        state.secondary,
+        state.active,
+        state.relay.primary,
+        state.relay.secondary
+    )
+end
+
+local function reconcilePlayerMembership(source, Player, desiredState)
+    local oldState = clonePlayerRadioState(source)
+    local oldSet = makeStateSet(oldState)
+    local newSet = makeStateSet(desiredState)
+    local touchedFrequencies = {}
+
+    for frequency in pairs(oldSet) do
+        if not newSet[frequency] then
+            removePlayerFromFrequency(source, frequency)
+        end
+    end
+
+    for frequency in pairs(newSet) do
+        if not radioFrequencies[frequency] then
+            radioFrequencies[frequency] = {}
+        end
+
+        local players = radioFrequencies[frequency]
+        local wasMember = players[source] ~= nil
+        players[source] = {
+            name = getPlayerRadioLabel(Player, source),
+            job = (Player.PlayerData and Player.PlayerData.job and Player.PlayerData.job.name) or 'unknown',
+            citizenid = (Player.PlayerData and Player.PlayerData.citizenid) or nil
+        }
+        addMembership(source, frequency)
+
+        if not wasMember then
+            touchedFrequencies[frequency] = true
+            queueHistoryLoad(source, frequency, buildFrequencyCustomData(frequency))
+        end
+    end
+
+    for frequency in pairs(touchedFrequencies) do
+        if radioFrequencies[frequency] then
+            updateFrequencyCount(frequency)
+        end
+    end
+end
+
+local function applyPlayerFrequencyState(source, requestedPrimary, requestedSecondary, requestedActive, relayPrimary, relaySecondary, requestId, shouldAcknowledge)
+    local Player = QBCore.Functions.GetPlayer(source)
+    if not Player then
+        if shouldAcknowledge then
+            sendAppliedStateToClient(source, requestId, 'not_ready')
+        end
+        return false, 'not_ready'
+    end
+
+    local desiredPrimary = sanitizeRequestedFrequency(source, requestedPrimary)
+    local desiredSecondary = sanitizeRequestedFrequency(source, requestedSecondary)
+
+    if desiredPrimary and desiredSecondary and desiredPrimary == desiredSecondary then
+        desiredSecondary = nil
+    end
+
+    local active = tostring(requestedActive or 'primary') == 'secondary' and 'secondary' or 'primary'
+    if active == 'primary' and not desiredPrimary and desiredSecondary then
+        active = 'secondary'
+    elseif active == 'secondary' and not desiredSecondary and desiredPrimary then
+        active = 'primary'
+    elseif not desiredPrimary and not desiredSecondary then
+        active = 'primary'
+    end
+
+    local desiredState = {
+        primary = desiredPrimary,
+        secondary = desiredSecondary,
+        active = active,
+        relay = {
+            primary = desiredPrimary and relayPrimary == true or false,
+            secondary = desiredSecondary and relaySecondary == true or false
+        }
+    }
+
+    reconcilePlayerMembership(source, Player, desiredState)
+    playerRadioState[source] = desiredState
+
+    if shouldAcknowledge then
+        sendAppliedStateToClient(source, requestId, 'applied')
+    end
+
+    return true, 'applied'
+end
+
+local function removeFrequencyFromPlayerState(source, frequency)
+    local state = playerRadioState[source]
+    if not state or not frequency then
+        return
+    end
+
+    if state.primary == frequency then
+        state.primary = nil
+        state.relay.primary = false
+    end
+
+    if state.secondary == frequency then
+        state.secondary = nil
+        state.relay.secondary = false
+    end
+
+    if state.active == 'primary' and not state.primary and state.secondary then
+        state.active = 'secondary'
+    elseif state.active == 'secondary' and not state.secondary and state.primary then
+        state.active = 'primary'
+    elseif not state.primary and not state.secondary then
+        state.active = 'primary'
+    end
+end
+
+RegisterNetEvent('7_radio:server:applyFrequencyState', function(primary, secondary, active, relayPrimary, relaySecondary, requestId)
+    applyPlayerFrequencyState(source, primary, secondary, active, relayPrimary, relaySecondary, requestId, true)
 end)
 
+RegisterNetEvent('7_radio:server:joinFrequency', function(frequency, isPrimary)
+    local state = clonePlayerRadioState(source)
+    local channel = isPrimary == true and 'primary' or 'secondary'
+    if channel == 'primary' then
+        state.primary = frequency
+    else
+        state.secondary = frequency
+    end
+    applyPlayerFrequencyState(source, state.primary, state.secondary, state.active, state.relay.primary, state.relay.secondary, nil, false)
+end)
 
 RegisterNetEvent('7_radio:server:leaveFrequency', function(frequency)
     local freqKey = normalizeFrequency(frequency)
-    if not freqKey then
-        return
+    local state = clonePlayerRadioState(source)
+
+    if freqKey and state.primary == freqKey then
+        state.primary = nil
+        state.relay.primary = false
     end
 
-    removePlayerFromFrequency(source, freqKey)
+    if freqKey and state.secondary == freqKey then
+        state.secondary = nil
+        state.relay.secondary = false
+    end
+
+    applyPlayerFrequencyState(source, state.primary, state.secondary, state.active, state.relay.primary, state.relay.secondary, nil, false)
 end)
 
 RegisterNetEvent('7_radio:server:resetPlayerFrequencies', function()
-    removePlayerFromAllFrequencies(source)
+    applyPlayerFrequencyState(source, nil, nil, 'primary', false, false, nil, false)
 end)
 
-
 RegisterNetEvent('7_radio:server:restoreFrequencies', function(primary, secondary)
-    local src = source
-    local Player = QBCore.Functions.GetPlayer(src)
-    if not Player then
-        return
-    end
-
-    removePlayerFromAllFrequencies(src)
-
-    if primary then
-        local freqKey = normalizeFrequency(primary)
-        if freqKey and isFrequencyInBounds(freqKey) and HasAccessToFrequency(src, freqKey) then
-            if not radioFrequencies[freqKey] then
-                radioFrequencies[freqKey] = {}
-            end
-            radioFrequencies[freqKey][src] = {
-                name = getPlayerRadioLabel(Player, src),
-                job = (Player.PlayerData and Player.PlayerData.job and Player.PlayerData.job.name) or 'unknown',
-                citizenid = (Player.PlayerData and Player.PlayerData.citizenid) or nil
-            }
-            addMembership(src, freqKey)
-            updateFrequencyCount(freqKey)
-
-            local freqConfig = getFrequencyConfig(freqKey)
-            local customData = {
-                label = freqConfig and freqConfig.label or nil,
-                color = freqConfig and freqConfig.color or nil,
-                macros = freqConfig and freqConfig.macros or nil
-            }
-            queueHistoryLoad(src, freqKey, customData)
-        end
-    end
-
-    if secondary and secondary ~= primary then
-        local freqKey = normalizeFrequency(secondary)
-        if freqKey and isFrequencyInBounds(freqKey) and HasAccessToFrequency(src, freqKey) and getPlayerMembershipCount(src) < 2 then
-            if not radioFrequencies[freqKey] then
-                radioFrequencies[freqKey] = {}
-            end
-            radioFrequencies[freqKey][src] = {
-                name = getPlayerRadioLabel(Player, src),
-                job = (Player.PlayerData and Player.PlayerData.job and Player.PlayerData.job.name) or 'unknown',
-                citizenid = (Player.PlayerData and Player.PlayerData.citizenid) or nil
-            }
-            addMembership(src, freqKey)
-            updateFrequencyCount(freqKey)
-
-            local freqConfig = getFrequencyConfig(freqKey)
-            local customData = {
-                label = freqConfig and freqConfig.label or nil,
-                color = freqConfig and freqConfig.color or nil,
-                macros = freqConfig and freqConfig.macros or nil
-            }
-            queueHistoryLoad(src, freqKey, customData)
-        end
-    end
+    applyPlayerFrequencyState(source, primary, secondary, 'primary', false, false, nil, false)
 end)
 
 RegisterNetEvent('7_radio:server:sendMessage', function(frequency, message, clientMessageId)
@@ -470,28 +560,27 @@ RegisterNetEvent('7_radio:server:sendMessage', function(frequency, message, clie
     end
 
     local messageId = trimString(clientMessageId)
-    if messageId ~= '' then
-        local bucket = recentMessageIds[src]
-        if not bucket then
-            bucket = {}
-            recentMessageIds[src] = bucket
-        end
-
-        for existingId, expiry in pairs(bucket) do
-            if expiry <= now then
-                bucket[existingId] = nil
-            end
-        end
-
-        local expiry = bucket[messageId]
-        if expiry and expiry > now then
-            return
-        end
-
-        bucket[messageId] = now + recentMessageWindowMs
-    else
-        messageId = nil
+    if messageId == '' then
+        messageId = ('srv_%s_%s_%s'):format(src, now, math.random(100000, 999999))
     end
+
+    local bucket = recentMessageIds[src]
+    if not bucket then
+        bucket = {}
+        recentMessageIds[src] = bucket
+    end
+
+    for existingId, expiry in pairs(bucket) do
+        if expiry <= now then
+            bucket[existingId] = nil
+        end
+    end
+
+    local expiry = bucket[messageId]
+    if expiry and expiry > now then
+        return
+    end
+    bucket[messageId] = now + recentMessageWindowMs
 
     local players = radioFrequencies[freqKey]
     if not players or not players[src] then
@@ -501,6 +590,7 @@ RegisterNetEvent('7_radio:server:sendMessage', function(frequency, message, clie
 
     if not HasAccessToFrequency(src, freqKey) then
         removePlayerFromFrequency(src, freqKey)
+        removeFrequencyFromPlayerState(src, freqKey)
         TriggerClientEvent('QBCore:Notify', src, 'You no longer have access to this frequency', 'error')
         return
     end
@@ -547,6 +637,7 @@ RegisterNetEvent('7_radio:server:sendMessage', function(frequency, message, clie
     for _, playerId in ipairs(toRemove) do
         players[playerId] = nil
         removeMembership(playerId, freqKey)
+        removeFrequencyFromPlayerState(playerId, freqKey)
     end
 
     if #toRemove > 0 then
@@ -592,6 +683,26 @@ end)
 AddEventHandler('playerDropped', function()
     removePlayerFromAllFrequencies(source)
     clearPlayerEphemeralState(source)
+end)
+
+AddEventHandler('playerConnecting', function()
+    local src = source
+    removePlayerFromAllFrequencies(src)
+    clearPlayerEphemeralState(src)
+end)
+
+AddEventHandler('onResourceStop', function(resourceName)
+    if resourceName ~= GetCurrentResourceName() then
+        return
+    end
+
+    radioFrequencies = {}
+    frequencyHistory = {}
+    playerMembership = {}
+    playerRadioState = {}
+    pendingHistoryLoads = {}
+    recentMessageIds = {}
+    lastMessageTick = {}
 end)
 
 QBCore.Commands.Add('radiolist', 'View list of active frequencies (admin)', {}, false, function(source)

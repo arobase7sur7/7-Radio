@@ -24,7 +24,18 @@ local statePersistencePrefix = '7_radio:state:'
 local persistenceVersion = 2
 local hasRestoredState = false
 local restoreInProgress = false
+local restoreWorkerRunning = false
+local restoreDesiredState = nil
+local restoreRetryCount = 0
+local maxRestoreRetries = 6
+local restoreRetryDelayMs = 700
+local frequencyRequestSequence = 0
+local latestFrequencyRequestSequence = 0
+local pendingFrequencyStateRequests = {}
+local recentIncomingMessageIds = {}
+local incomingMessageWindowMs = 60000
 local normalizeFrequencyLabel
+local syncFrequencyStateToNui
 local uiThemePresets = {
     ['default'] = true,
     ['midnight'] = true,
@@ -474,6 +485,28 @@ local function stripGpsTokenFromMessage(message)
     return tostring(message):gsub('%%gpslink|([^|]+)|[^|]+|[^|]+|[^%%]+%%', '%1')
 end
 
+local function shouldProcessIncomingMessage(clientMessageId)
+    local id = tostring(clientMessageId or ''):match('^%s*(.-)%s*$')
+    if id == '' then
+        return true
+    end
+
+    local now = GetGameTimer()
+    for key, expiresAt in pairs(recentIncomingMessageIds) do
+        if expiresAt <= now then
+            recentIncomingMessageIds[key] = nil
+        end
+    end
+
+    local existingExpiry = recentIncomingMessageIds[id]
+    if existingExpiry and existingExpiry > now then
+        return false
+    end
+
+    recentIncomingMessageIds[id] = now + incomingMessageWindowMs
+    return true
+end
+
 local function getCitizenId()
     if PlayerData and PlayerData.citizenid then
         return PlayerData.citizenid
@@ -513,6 +546,62 @@ local function applyActiveFallback()
     end
 end
 
+local function buildFrequencyStatePayload()
+    return {
+        primary = radioState.primary,
+        secondary = radioState.secondary,
+        active = radioState.active,
+        primaryChatRelay = radioState.chatRelay.primary == true,
+        secondaryChatRelay = radioState.chatRelay.secondary == true
+    }
+end
+
+local function applyFrequencyStateFromServer(primary, secondary, active, primaryChatRelay, secondaryChatRelay, skipPersist)
+    local primaryLabel = parseFrequency(primary)
+    local secondaryLabel = parseFrequency(secondary)
+
+    if primaryLabel and secondaryLabel and primaryLabel == secondaryLabel then
+        secondaryLabel = nil
+    end
+
+    radioState.primary = primaryLabel
+    radioState.secondary = secondaryLabel
+    radioState.active = tostring(active or 'primary') == 'secondary' and 'secondary' or 'primary'
+    radioState.chatRelay.primary = primaryLabel and primaryChatRelay == true or false
+    radioState.chatRelay.secondary = secondaryLabel and secondaryChatRelay == true or false
+
+    applyActiveFallback()
+    syncFrequencyStateToNui(skipPersist)
+end
+
+local function createFrequencyRequestId()
+    frequencyRequestSequence = frequencyRequestSequence + 1
+    return ('%s_%s'):format(GetGameTimer(), frequencyRequestSequence)
+end
+
+local function requestFrequencyStateApply(payload, reason, handler)
+    local requestId = createFrequencyRequestId()
+    latestFrequencyRequestSequence = frequencyRequestSequence
+    pendingFrequencyStateRequests[requestId] = {
+        sequence = frequencyRequestSequence,
+        reason = reason,
+        payload = payload,
+        handler = handler
+    }
+
+    TriggerServerEvent(
+        '7_radio:server:applyFrequencyState',
+        payload.primary,
+        payload.secondary,
+        payload.active,
+        payload.primaryChatRelay,
+        payload.secondaryChatRelay,
+        requestId
+    )
+
+    return requestId
+end
+
 local function persistRadioState()
     local key = getStateStorageKey()
     if not key then
@@ -550,7 +639,7 @@ local function syncThemeOverrideStateToNui()
     })
 end
 
-local function syncFrequencyStateToNui(skipPersist)
+syncFrequencyStateToNui = function(skipPersist)
     SendNUIMessage({
         action = 'syncFrequencies',
         primary = radioState.primary,
@@ -630,6 +719,13 @@ local function validatePersistedFrequency(value)
     return frequency
 end
 
+local function requestRestoreApply()
+    if not restoreInProgress or not restoreDesiredState then
+        return
+    end
+    requestFrequencyStateApply(restoreDesiredState, 'restore')
+end
+
 local function restorePersistedState()
     if hasRestoredState or restoreInProgress then
         return
@@ -640,20 +736,25 @@ local function restorePersistedState()
         return
     end
 
-    restoreInProgress = true
-
     local raw = GetResourceKvpString(key)
-    local restored = false
+    local loadedFromStorage = false
+    local desiredState = {
+        primary = nil,
+        secondary = nil,
+        active = 'primary',
+        primaryChatRelay = false,
+        secondaryChatRelay = false
+    }
 
     if raw and raw ~= '' then
         local ok, data = pcall(json.decode, raw)
         if ok and type(data) == 'table' then
+            loadedFromStorage = true
             uiState = sanitizeUiState(data.ui, getDefaultUiState())
             themeOverrides = sanitizeThemeOverrides(data.themeOverrides)
 
             local primary = validatePersistedFrequency(data.primary)
             local secondary = validatePersistedFrequency(data.secondary)
-
             if primary and secondary and primary == secondary then
                 secondary = nil
             end
@@ -665,48 +766,34 @@ local function restorePersistedState()
                 relaySecondary = data.relay.secondary == true
             end
 
-            radioState.primary = nil
-            radioState.secondary = nil
-            radioState.chatRelay.primary = false
-            radioState.chatRelay.secondary = false
-
-            TriggerServerEvent('7_radio:server:restoreFrequencies', primary, secondary)
-
-            if primary then
-                radioState.primary = primary
-                radioState.chatRelay.primary = relayPrimary
-            end
-
-            if secondary then
-                radioState.secondary = secondary
-                radioState.chatRelay.secondary = relaySecondary
-            end
-
-            radioState.active = tostring(data.active or 'primary') == 'secondary' and 'secondary' or 'primary'
-            applyActiveFallback()
-            syncFrequencyStateToNui()
-            syncUiSettingsToNui()
-            restored = true
+            desiredState.primary = primary
+            desiredState.secondary = secondary
+            desiredState.active = tostring(data.active or 'primary') == 'secondary' and 'secondary' or 'primary'
+            desiredState.primaryChatRelay = relayPrimary
+            desiredState.secondaryChatRelay = relaySecondary
         end
     end
 
-    if not restored then
+    if not loadedFromStorage then
         uiState = getDefaultUiState()
         themeOverrides = getDefaultThemeOverrides()
-        applyActiveFallback()
-        syncFrequencyStateToNui()
-        syncUiSettingsToNui()
     end
 
-    hasRestoredState = true
-    restoreInProgress = false
+    restoreInProgress = true
+    restoreDesiredState = desiredState
+    restoreRetryCount = 0
+
+    syncUiSettingsToNui()
+    syncThemeOverrideStateToNui()
+    requestRestoreApply()
 end
 
 local function scheduleStateRestore()
-    if hasRestoredState or restoreInProgress then
+    if hasRestoredState or restoreInProgress or restoreWorkerRunning then
         return
     end
 
+    restoreWorkerRunning = true
     CreateThread(function()
         for _ = 1, 80 do
             local data = QBCore.Functions.GetPlayerData()
@@ -716,11 +803,14 @@ local function scheduleStateRestore()
 
             if PlayerData and PlayerData.citizenid and PlayerData.job then
                 restorePersistedState()
+                restoreWorkerRunning = false
                 return
             end
 
             Wait(250)
         end
+
+        restoreWorkerRunning = false
     end)
 end
 
@@ -748,10 +838,73 @@ AddEventHandler('onClientResourceStart', function(resourceName)
     scheduleStateRestore()
 end)
 
+RegisterNetEvent('7_radio:client:frequencyStateApplied', function(requestId, status, primary, secondary, active, primaryChatRelay, secondaryChatRelay)
+    local request = requestId and pendingFrequencyStateRequests[requestId] or nil
+    if requestId then
+        pendingFrequencyStateRequests[requestId] = nil
+    end
+
+    if requestId and not request then
+        return
+    end
+
+    if request and request.reason ~= 'restore' and request.sequence < latestFrequencyRequestSequence then
+        if request.handler then
+            request.handler(false, 'stale', request.payload, nil)
+        end
+        return
+    end
+
+    if status == 'not_ready' then
+        if request and request.reason == 'restore' and restoreInProgress and restoreDesiredState then
+            if restoreRetryCount < maxRestoreRetries then
+                restoreRetryCount = restoreRetryCount + 1
+                Citizen.SetTimeout(restoreRetryDelayMs, function()
+                    if restoreInProgress and restoreDesiredState then
+                        requestRestoreApply()
+                    end
+                end)
+            else
+                restoreInProgress = false
+                hasRestoredState = true
+                restoreDesiredState = nil
+                restoreRetryCount = 0
+                applyFrequencyStateFromServer(nil, nil, 'primary', false, false)
+            end
+        end
+
+        if request and request.handler then
+            request.handler(false, status, request.payload, nil)
+        end
+        return
+    end
+
+    local skipPersist = request and request.reason == 'clear_cache'
+    applyFrequencyStateFromServer(primary, secondary, active, primaryChatRelay, secondaryChatRelay, skipPersist)
+
+    if request and request.reason == 'restore' then
+        restoreInProgress = false
+        hasRestoredState = true
+        restoreDesiredState = nil
+        restoreRetryCount = 0
+    end
+
+    if request and request.handler then
+        request.handler(true, status, request.payload, buildFrequencyStatePayload())
+    end
+end)
+
 RegisterNetEvent('QBCore:Client:OnPlayerLoaded', function()
     PlayerData = QBCore.Functions.GetPlayerData() or {}
     hasRestoredState = false
     restoreInProgress = false
+    restoreWorkerRunning = false
+    restoreDesiredState = nil
+    restoreRetryCount = 0
+    latestFrequencyRequestSequence = 0
+    pendingFrequencyStateRequests = {}
+    recentIncomingMessageIds = {}
+    lastRadioNotify = {}
     scheduleStateRestore()
 end)
 
@@ -769,29 +922,58 @@ RegisterNetEvent('QBCore:Client:OnPlayerUnload', function()
     PlayerData = {}
     hasRestoredState = false
     restoreInProgress = false
+    restoreWorkerRunning = false
+    restoreDesiredState = nil
+    restoreRetryCount = 0
+    latestFrequencyRequestSequence = 0
+    pendingFrequencyStateRequests = {}
+    recentIncomingMessageIds = {}
+    lastRadioNotify = {}
 
+    closeNuiClean()
+end)
+
+AddEventHandler('onClientResourceStop', function(resourceName)
+    if resourceName ~= GetCurrentResourceName() then
+        return
+    end
+
+    radioState.radioOpen = false
+    radioState.chatOpen = false
+    pendingFrequencyStateRequests = {}
+    restoreInProgress = false
+    restoreWorkerRunning = false
+    restoreDesiredState = nil
+    restoreRetryCount = 0
+    latestFrequencyRequestSequence = 0
     closeNuiClean()
 end)
 
 RegisterNetEvent('QBCore:Client:OnJobUpdate', function(jobInfo)
     PlayerData.job = jobInfo
 
-    if radioState.primary and not HasAccessToFrequency(radioState.primary) then
+    local desiredState = buildFrequencyStatePayload()
+    local hasChanges = false
+
+    if desiredState.primary and not HasAccessToFrequency(desiredState.primary) then
         QBCore.Functions.Notify('You no longer have access to this frequency', 'error')
-        TriggerServerEvent('7_radio:server:leaveFrequency', radioState.primary)
-        radioState.primary = nil
-        radioState.chatRelay.primary = false
+        desiredState.primary = nil
+        desiredState.primaryChatRelay = false
+        hasChanges = true
     end
 
-    if radioState.secondary and not HasAccessToFrequency(radioState.secondary) then
+    if desiredState.secondary and not HasAccessToFrequency(desiredState.secondary) then
         QBCore.Functions.Notify('You no longer have access to the secondary frequency', 'error')
-        TriggerServerEvent('7_radio:server:leaveFrequency', radioState.secondary)
-        radioState.secondary = nil
-        radioState.chatRelay.secondary = false
+        desiredState.secondary = nil
+        desiredState.secondaryChatRelay = false
+        hasChanges = true
     end
 
-    applyActiveFallback()
-    syncFrequencyStateToNui()
+    if hasChanges then
+        requestFrequencyStateApply(desiredState, 'job_update')
+    else
+        syncFrequencyStateToNui()
+    end
 end)
 
 function ToggleRadioUI()
@@ -933,9 +1115,27 @@ RegisterNUICallback('nuiClosed', function(_, cb)
     cb('ok')
 end)
 
+RegisterNUICallback('nuiReady', function(_, cb)
+    SendNUIMessage({
+        action = 'setSounds',
+        enabled = Config.Sounds.enabled,
+        volume = Config.Sounds.volume
+    })
+    syncFrequencyStateToNui(true)
+    syncUiSettingsToNui()
+    syncThemeOverrideStateToNui()
+    cb('ok')
+end)
+
 RegisterNUICallback('setFrequency', function(data, cb)
     local frequency = data and data.frequency
     local isPrimary = data and data.isPrimary == true
+
+    if restoreInProgress then
+        QBCore.Functions.Notify('Radio state is still loading, try again', 'error')
+        cb({ success = false })
+        return
+    end
 
     local freqLabel = parseFrequency(frequency)
     if not freqLabel then
@@ -952,38 +1152,62 @@ RegisterNUICallback('setFrequency', function(data, cb)
 
     local channel = isPrimary and 'primary' or 'secondary'
     local otherChannel = isPrimary and 'secondary' or 'primary'
-    local current = radioState[channel]
-    local otherFrequency = radioState[otherChannel]
+    local desiredState = buildFrequencyStatePayload()
 
-    if current and current ~= freqLabel then
-        radioState.chatRelay[channel] = false
-        if otherFrequency ~= current then
-            TriggerServerEvent('7_radio:server:leaveFrequency', current)
+    desiredState[channel] = freqLabel
+    if desiredState[otherChannel] == freqLabel then
+        desiredState[otherChannel] = nil
+        if otherChannel == 'primary' then
+            desiredState.primaryChatRelay = false
+        else
+            desiredState.secondaryChatRelay = false
         end
     end
 
-    if current ~= freqLabel and otherFrequency ~= freqLabel then
-        TriggerServerEvent('7_radio:server:joinFrequency', freqLabel, isPrimary)
-    end
-
-    radioState[channel] = freqLabel
     if isPrimary then
-        radioState.active = 'primary'
+        desiredState.active = 'primary'
+    elseif desiredState.active ~= 'secondary' and desiredState.secondary and not desiredState.primary then
+        desiredState.active = 'secondary'
     end
 
-    applyActiveFallback()
-    syncFrequencyStateToNui()
+    requestFrequencyStateApply(desiredState, 'set_frequency', function(success, status, requestedState, appliedState)
+        if not success or not appliedState then
+            if status == 'not_ready' then
+                QBCore.Functions.Notify('Radio is not ready yet, try again', 'error')
+            else
+                QBCore.Functions.Notify('Unable to set this frequency', 'error')
+            end
 
-    QBCore.Functions.Notify((isPrimary and 'Primary' or 'Secondary') .. ' frequency set to ' .. freqLabel, 'success')
+            cb({
+                success = false,
+                primary = radioState.primary,
+                secondary = radioState.secondary,
+                activeFreq = radioState.active,
+                primaryChatRelay = radioState.chatRelay.primary,
+                secondaryChatRelay = radioState.chatRelay.secondary
+            })
+            return
+        end
 
-    cb({
-        success = true,
-        primary = radioState.primary,
-        secondary = radioState.secondary,
-        activeFreq = radioState.active,
-        primaryChatRelay = radioState.chatRelay.primary,
-        secondaryChatRelay = radioState.chatRelay.secondary
-    })
+        local appliedFrequency = appliedState[channel]
+        local requestedFrequency = requestedState[channel]
+        local accepted = requestedFrequency and appliedFrequency == requestedFrequency
+
+        if accepted then
+            QBCore.Functions.Notify((isPrimary and 'Primary' or 'Secondary') .. ' frequency set to ' .. requestedFrequency, 'success')
+        else
+            QBCore.Functions.Notify('Unable to set this frequency', 'error')
+        end
+
+        cb({
+            success = accepted == true,
+            primary = radioState.primary,
+            secondary = radioState.secondary,
+            activeFreq = radioState.active,
+            primaryChatRelay = radioState.chatRelay.primary,
+            secondaryChatRelay = radioState.chatRelay.secondary
+        })
+    end)
 end)
 
 RegisterNUICallback('sendMessage', function(data, cb)
@@ -1067,6 +1291,18 @@ RegisterNUICallback('toggleChatRelay', function(data, cb)
     local targetFrequency = channel == 'primary' and radioState.primary or radioState.secondary
     local explicitEnabled = data and data.enabled
 
+    if restoreInProgress then
+        cb({
+            success = false,
+            reason = 'restoring',
+            channel = channel,
+            enabled = channel == 'primary' and radioState.chatRelay.primary or radioState.chatRelay.secondary,
+            primaryChatRelay = radioState.chatRelay.primary,
+            secondaryChatRelay = radioState.chatRelay.secondary
+        })
+        return
+    end
+
     if not targetFrequency then
         radioState.chatRelay[channel] = false
         syncFrequencyStateToNui()
@@ -1095,20 +1331,42 @@ RegisterNUICallback('toggleChatRelay', function(data, cb)
         return
     end
 
+    local desiredState = buildFrequencyStatePayload()
     if type(explicitEnabled) == 'boolean' then
-        radioState.chatRelay[channel] = explicitEnabled
+        if channel == 'primary' then
+            desiredState.primaryChatRelay = explicitEnabled
+        else
+            desiredState.secondaryChatRelay = explicitEnabled
+        end
     else
-        radioState.chatRelay[channel] = not radioState.chatRelay[channel]
+        if channel == 'primary' then
+            desiredState.primaryChatRelay = not desiredState.primaryChatRelay
+        else
+            desiredState.secondaryChatRelay = not desiredState.secondaryChatRelay
+        end
     end
-    syncFrequencyStateToNui()
 
-    cb({
-        success = true,
-        channel = channel,
-        enabled = radioState.chatRelay[channel],
-        primaryChatRelay = radioState.chatRelay.primary,
-        secondaryChatRelay = radioState.chatRelay.secondary
-    })
+    requestFrequencyStateApply(desiredState, 'toggle_relay', function(success, status, _, appliedState)
+        if not success or not appliedState then
+            cb({
+                success = false,
+                reason = status == 'not_ready' and 'not_ready' or 'apply_failed',
+                channel = channel,
+                enabled = channel == 'primary' and radioState.chatRelay.primary or radioState.chatRelay.secondary,
+                primaryChatRelay = radioState.chatRelay.primary,
+                secondaryChatRelay = radioState.chatRelay.secondary
+            })
+            return
+        end
+
+        cb({
+            success = true,
+            channel = channel,
+            enabled = channel == 'primary' and appliedState.primaryChatRelay or appliedState.secondaryChatRelay,
+            primaryChatRelay = appliedState.primaryChatRelay,
+            secondaryChatRelay = appliedState.secondaryChatRelay
+        })
+    end)
 end)
 
 RegisterNUICallback('saveUiSettings', function(data, cb)
@@ -1267,28 +1525,36 @@ RegisterNUICallback('clearCache', function(_, cb)
         DeleteResourceKvp(key)
     end
 
-    TriggerServerEvent('7_radio:server:resetPlayerFrequencies')
-
-    radioState.primary = nil
-    radioState.secondary = nil
-    radioState.active = 'primary'
-    radioState.chatRelay.primary = false
-    radioState.chatRelay.secondary = false
-    applyActiveFallback()
-
     uiState = getDefaultUiState()
     themeOverrides = getDefaultThemeOverrides()
 
-    syncFrequencyStateToNui(true)
-    syncUiSettingsToNui()
-    syncThemeOverrideStateToNui()
-    notifyUiDefaultsApplied(true)
+    requestFrequencyStateApply({
+        primary = nil,
+        secondary = nil,
+        active = 'primary',
+        primaryChatRelay = false,
+        secondaryChatRelay = false
+    }, 'clear_cache', function(success)
+        if not success then
+            cb({
+                success = false,
+                ui = uiState,
+                themeOverrides = themeOverrides
+            })
+            return
+        end
 
-    cb({
-        success = true,
-        ui = uiState,
-        themeOverrides = themeOverrides
-    })
+        syncFrequencyStateToNui(true)
+        syncUiSettingsToNui()
+        syncThemeOverrideStateToNui()
+        notifyUiDefaultsApplied(true)
+
+        cb({
+            success = true,
+            ui = uiState,
+            themeOverrides = themeOverrides
+        })
+    end)
 end)
 
 RegisterNetEvent('7_radio:client:receiveMessage', function(frequency, senderName, message, senderId, clientMessageId, timestamp)
@@ -1299,6 +1565,10 @@ RegisterNetEvent('7_radio:client:receiveMessage', function(frequency, senderName
 
     local channel = getChannelForFrequency(freqLabel)
     if not channel then
+        return
+    end
+
+    if not shouldProcessIncomingMessage(clientMessageId) then
         return
     end
 
